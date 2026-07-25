@@ -1,0 +1,41 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(claude-api)",
+      "Skill(claude-api:*)",
+      "Bash(/d/code/agentscope/.venv/bin/python -c \"import importlib.metadata as m; print\\('\\\\n'.join\\(sorted\\(d.metadata['Name']+'=='+d.version for d in m.distributions\\(\\)\\)\\)\\)\")",
+      "Bash(py --version)",
+      "Bash(python -c \"import pathlib; p=pathlib.Path\\('/d/code/agentscope/.venv/lib/python3.14/site-packages'\\); print\\('\\\\n'.join\\(sorted\\(x.name[:-10] for x in p.glob\\('*.dist-info'\\)\\)\\)\\)\")",
+      "Bash(python -c \"import pathlib; p=pathlib.Path\\('d:/code/agentscope/.venv/lib/python3.14/site-packages'\\); print\\('\\\\n'.join\\(sorted\\(x.name[:-10] for x in p.glob\\('*.dist-info'\\)\\)\\)\\)\")",
+      "Bash(git -C /d/code/agentscope status --short --branch)",
+      "Bash(./.venv/bin/python -c \"import agentscope; print\\(agentscope.__file__\\)\")",
+      "Bash(python -c \"import sys; print\\(sys.executable\\); print\\(sys.version\\)\")",
+      "Bash(uv --version)",
+      "Bash(python -c \"import importlib.util; print\\('agentscope', importlib.util.find_spec\\('agentscope'\\)\\); print\\('pydantic_settings', importlib.util.find_spec\\('pydantic_settings'\\)\\); print\\('pytest', importlib.util.find_spec\\('pytest'\\)\\)\")",
+      "Bash(uv pip *)",
+      "Bash(python -m pip index versions agentscope)",
+      "WebFetch(domain:pypi.org)",
+      "Bash(python -m compileall -q src tests)",
+      "Bash(python -m pytest -q)",
+      "Bash(python -m ruff check src tests)",
+      "Bash(python -m ruff check --fix tests/test_config.py)",
+      "Bash(uv sync *)",
+      "Bash(UV_PROJECT_ENVIRONMENT=.venv-win uv sync --extra dev)",
+      "Bash(UV_PROJECT_ENVIRONMENT=.venv-win uv run pytest -q)",
+      "Bash(UV_PROJECT_ENVIRONMENT=.venv-win uv run ruff check src tests)",
+      "Bash(UV_PROJECT_ENVIRONMENT=.venv-win uv run python -c \"import agentscope; from agentscope.agent import Agent, ModelConfig, ReActConfig; from agentscope.mcp import MCPClient, HttpMCPConfig; from agentscope.model import DeepSeekChatModel; from agentscope.credential import DeepSeekCredential; print\\('AgentScope import OK', getattr\\(agentscope, '__version__', 'unknown'\\)\\); print\\(Agent.__name__, ModelConfig.__name__, ReActConfig.__name__, MCPClient.__name__, HttpMCPConfig.__name__, DeepSeekChatModel.__name__, DeepSeekCredential.__name__\\)\")",
+      "Bash(UV_PROJECT_ENVIRONMENT=.venv-win uv run python -m compileall -q src tests)",
+      "Bash(UV_PROJECT_ENVIRONMENT=.venv-win uv run python -m agent --check-config)",
+      "Bash(UV_PROJECT_ENVIRONMENT=.venv-win uv run python -c \"import asyncio; from agent.config import Settings; from agent.mcp_client import build_mcp_client, connect_mcp, list_mcp_tools, close_mcp; async def main\\(\\):\\\\n    client=build_mcp_client\\(Settings\\(api_key='test-key'\\)\\); await connect_mcp\\(client\\);\\\\n    try: print\\('MCP tools:', ', '.join\\(await list_mcp_tools\\(client\\)\\)\\)\\\\n    finally: await close_mcp\\(client\\)\\\\nasyncio.run\\(main\\(\\)\\)\")",
+      "Bash(UV_PROJECT_ENVIRONMENT=.venv-win uv run python -)",
+      "Bash(grep -Ei '^\\(package\\(-lock\\)?\\\\.json|pnpm-lock\\\\.yaml|yarn\\\\.lock|bun\\\\.lockb?|vite\\\\.config\\\\..*|next\\\\.config\\\\..*|astro\\\\.config\\\\..*|svelte\\\\.config\\\\..*|nuxt\\\\.config\\\\..*|angular\\\\.json|webpack\\\\.config\\\\..*|tsconfig\\\\.json|tailwind\\\\.config\\\\..*|postcss\\\\.config\\\\..*|playwright\\\\.config\\\\..*|cypress\\\\.config\\\\..*|vitest\\\\.config\\\\..*\\)$')",
+      "Bash(grep -nB 8 -A 12 'name = \"agentscope\"' /mnt/d/code/agentscope/uv.lock)",
+      "Bash(grep -nB 8 -A 15 'name = \"agent\"' /mnt/d/code/agentscope/uv.lock)",
+      "Bash(git -C /mnt/d/code/agentscope status --short)",
+      "Bash(git -C /mnt/d/code/agentscope log --oneline -5)",
+      "Bash(uv run *)",
+      "Bash(node --check src/agent/web/static/app.js)",
+      "Bash(bash -n scripts/start.sh)"
+    ]
+  }
+}
