@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
 import { api, ChatResponse, Conversation } from "../../lib/api";
 
 type Message = { id: string; role: "user" | "assistant"; text: string; confirmation?: ChatResponse };
@@ -9,8 +9,15 @@ function storageKey(ownerId: string) {
   return `baby-buddy-conversation:${ownerId}`;
 }
 
+function newId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
 function newConversationId() {
-  return crypto.randomUUID();
+  return newId();
 }
 
 function savedConversationId(ownerId: string) {
@@ -127,7 +134,7 @@ export function Chat({ ownerId, onLogout }: { ownerId: string; onLogout: () => P
   async function send(value: string) {
     const content = value.trim();
     if (!content || busy || historyLoading || messagesLoading) return;
-    setMessages((items) => [...items, { id: crypto.randomUUID(), role: "user", text: content }]);
+    setMessages((items) => [...items, { id: newId(), role: "user", text: content }]);
     setText("");
     setBusy(true);
     try {
@@ -142,7 +149,7 @@ export function Chat({ ownerId, onLogout }: { ownerId: string; onLogout: () => P
   }
 
   function appendAssistant(messageText: string, confirmation?: ChatResponse) {
-    setMessages((items) => [...items, { id: crypto.randomUUID(), role: "assistant", text: messageText, confirmation }]);
+    setMessages((items) => [...items, { id: newId(), role: "assistant", text: messageText, confirmation }]);
   }
 
   function appendResponse(response: ChatResponse) {
@@ -165,6 +172,12 @@ export function Chat({ ownerId, onLogout }: { ownerId: string; onLogout: () => P
   }
 
   function submit(event: FormEvent) {
+    event.preventDefault();
+    void send(text);
+  }
+
+  function sendOnEnter(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key !== "Enter" || event.shiftKey) return;
     event.preventDefault();
     void send(text);
   }
@@ -208,7 +221,7 @@ export function Chat({ ownerId, onLogout }: { ownerId: string; onLogout: () => P
           </li>)}
         </ol>
         <form onSubmit={submit} className="sticky bottom-0 border-t border-stone-200 bg-stone-50 py-3">
-          <textarea value={text} onChange={(event) => setText(event.target.value)} disabled={inputDisabled} placeholder="例如：宝宝刚尿湿了" className="w-full resize-none rounded-2xl border border-stone-300 bg-white px-4 py-3 outline-none focus:border-emerald-600" rows={3} />
+          <textarea value={text} onChange={(event) => setText(event.target.value)} onKeyDown={sendOnEnter} disabled={inputDisabled} placeholder="例如：宝宝刚尿湿了（Enter 发送，Shift + Enter 换行）" className="w-full resize-none rounded-2xl border border-stone-300 bg-white px-4 py-3 outline-none focus:border-emerald-600" rows={3} />
           <div className="mt-2 flex gap-2 overflow-x-auto pb-1">{prompts.map((prompt) => <button key={prompt} disabled={inputDisabled} onClick={() => { void send(prompt); }} type="button" className="whitespace-nowrap rounded-full bg-emerald-100 px-3 py-2 text-sm font-semibold text-emerald-900">{prompt}</button>)}<button disabled={inputDisabled} className="ml-auto rounded-xl bg-emerald-700 px-4 py-2 font-semibold text-white">{busy ? "处理中…" : "发送"}</button></div>
         </form>
       </section>

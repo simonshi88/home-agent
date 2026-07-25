@@ -7,20 +7,20 @@ services:
       - .env
     environment:
       AGENT_WEB_HOST: 0.0.0.0
-      AGENT_WEB_PORT: "8000"
+      AGENT_WEB_PORT: "${AGENT_WEB_PORT:-18080}"
       AGENT_WEB_ALLOWED_ORIGINS: ""
       AGENT_WEB_DATABASE_PATH: /data/agent-web.sqlite3
       BABYBUDDY_AUDIT_PATH: /data/audit/events.jsonl
     volumes:
       - agent_data:/data
     ports:
-      - "8000:8000"
+      - "${AGENT_WEB_PORT:-18080}:${AGENT_WEB_PORT:-18080}"
     healthcheck:
       test:
         - CMD
         - python3
         - -c
-        - "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/health').read()"
+        - "from urllib.request import urlopen; urlopen('http://127.0.0.1:${AGENT_WEB_PORT:-18080}/health').read()"
       interval: 30s
       timeout: 5s
       retries: 3
