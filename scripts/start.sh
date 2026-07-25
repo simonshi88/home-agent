@@ -3,7 +3,15 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-API_PORT="${AGENT_WEB_PORT:-8000}"
+
+if [[ -f "$ROOT_DIR/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT_DIR/.env"
+  set +a
+fi
+
+API_PORT="${AGENT_WEB_PORT:-18080}"
 WEB_PORT="${VITE_PORT:-5173}"
 
 stop_port() {
@@ -56,7 +64,7 @@ env -u AGENTSCOPE_MODEL_PROVIDER -u AGENTSCOPE_MODEL_NAME \
 API_PID=$!
 
 echo "Starting frontend at http://127.0.0.1:$WEB_PORT"
-npm --prefix "$ROOT_DIR/web" run dev -- --host 0.0.0.0 --port "$WEB_PORT" &
+env VITE_API_PORT="$API_PORT" npm --prefix "$ROOT_DIR/web" run dev -- --host 0.0.0.0 --port "$WEB_PORT" &
 WEB_PID=$!
 
 echo "Open http://localhost:$WEB_PORT"

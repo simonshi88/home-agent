@@ -12,7 +12,7 @@ services:
       AGENT_WEB_DATABASE_PATH: /data/agent-web.sqlite3
       BABYBUDDY_AUDIT_PATH: /data/audit/events.jsonl
     volumes:
-      - agent_data:/data
+      - ./agent_data:/data
     ports:
       - "${AGENT_WEB_PORT:-18080}:${AGENT_WEB_PORT:-18080}"
     healthcheck:
