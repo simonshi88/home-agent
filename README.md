@@ -132,7 +132,7 @@ Cookie、Agent 回复和待确认操作；不会收到 LLM key、Baby Buddy Toke
 
 ### Docker 部署
 
-Docker 镜像使用独立的 Node 和 Python 构建阶段，最终运行镜像只包含 Python 运行时、
+Docker 镜像使用独立的 Node 和 Python 3.14 构建阶段，最终运行镜像只包含 Python 运行时、
 Home Jarvis 后端和编译后的 React 页面。FastAPI 在同一个来源提供页面与 API，不需要
 额外的 Nginx 容器。先复制并填写 `.env`，尤其是 `AGENT_WEB_PASSWORD`、
 `AGENT_WEB_SESSION_SECRET`、模型凭据、MCP、Baby Buddy 媒体地址和动作数据库配置，然后运行：

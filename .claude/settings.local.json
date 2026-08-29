@@ -35,7 +35,8 @@
       "Bash(git -C /mnt/d/code/agentscope log --oneline -5)",
       "Bash(uv run *)",
       "Bash(node --check src/agent/web/static/app.js)",
-      "Bash(bash -n scripts/start.sh)"
+      "Bash(bash -n scripts/start.sh)",
+      "Bash(xargs -I{} echo {})"
     ]
   }
 }
