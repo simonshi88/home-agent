@@ -1,30 +1,44 @@
+name: home-jarvis
+
 services:
-  api:
+  app:
     build:
       context: .
-      target: api
+      target: runtime
+    image: home-jarvis:local
+    init: true
+    restart: unless-stopped
     env_file:
       - .env
     environment:
       AGENT_WEB_HOST: 0.0.0.0
-      AGENT_WEB_PORT: "${AGENT_WEB_PORT:-18080}"
+      AGENT_WEB_PORT: 8000
       AGENT_WEB_ALLOWED_ORIGINS: ""
       AGENT_WEB_DATABASE_PATH: /data/agent-web.sqlite3
       BABYBUDDY_AUDIT_PATH: /data/audit/events.jsonl
-    volumes:
-      - ./agent_data:/data
+      BABYBUDDY_MEDIA_URL: "${BABYBUDDY_MEDIA_URL:-http://baby.home}"
     ports:
-      - "${AGENT_WEB_PORT:-18080}:${AGENT_WEB_PORT:-18080}"
+      - "${HOME_JARVIS_PORT:-18080}:8000"
+    volumes:
+      - agent_data:/data
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    stop_grace_period: 30s
     healthcheck:
       test:
         - CMD
-        - python3
+        - python
         - -c
-        - "from urllib.request import urlopen; urlopen('http://127.0.0.1:${AGENT_WEB_PORT:-18080}/health').read()"
+        - "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/health', timeout=3).read()"
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 15s
 
 volumes:
   agent_data:
+    name: home-jarvis-data

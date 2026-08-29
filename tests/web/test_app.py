@@ -68,6 +68,8 @@ class FakeService:
                 session_id="phone-parent-a",
                 created_at="2026-07-21T00:00:00+00:00",
                 updated_at="2026-07-21T00:01:00+00:00",
+                title="宝宝刚喝了 120 毫升奶",
+                message_count=2,
             )
         ]
 
@@ -200,6 +202,8 @@ def test_conversation_history_requires_login_and_uses_cookie_owner(tmp_path) -> 
                 "session_id": "phone-parent-a",
                 "created_at": "2026-07-21T00:00:00+00:00",
                 "updated_at": "2026-07-21T00:01:00+00:00",
+                "title": "宝宝刚喝了 120 毫升奶",
+                "message_count": 2,
             }
         ]
     }

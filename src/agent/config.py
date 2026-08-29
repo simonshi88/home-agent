@@ -89,6 +89,8 @@ class Settings:
         "localhost",
         "127.0.0.1",
     )
+    babybuddy_media_url: str = "http://baby.home"
+    database_url: str = "postgresql://postgres:123456@192.168.5.13:5432/ExerciseDB"
     user_name: str = "user"
     audit_path: str = "var/audit/events.jsonl"
     web_host: str = "0.0.0.0"
@@ -138,6 +140,21 @@ class Settings:
                 "BABYBUDDY_MCP_URL host is not in BABYBUDDY_MCP_ALLOWED_HOSTS",
             )
 
+        database_url = os.getenv("DATABASE_URL", cls.database_url).strip()
+        database_parsed = urlparse(database_url)
+        if database_parsed.scheme not in {"postgres", "postgresql"}:
+            raise ConfigurationError("DATABASE_URL must be a PostgreSQL URL")
+
+        media_url = os.getenv(
+            "BABYBUDDY_MEDIA_URL",
+            cls.babybuddy_media_url,
+        ).strip().rstrip("/")
+        media_parsed = urlparse(media_url)
+        if media_parsed.scheme not in {"http", "https"} or not media_parsed.hostname:
+            raise ConfigurationError(
+                "BABYBUDDY_MEDIA_URL must be an http(s) origin",
+            )
+
         return cls(
             model_provider=provider,
             model_name=os.getenv("AGENTSCOPE_MODEL_NAME", cls.model_name).strip(),
@@ -160,6 +177,8 @@ class Settings:
             mcp_enable_tools=_csv("BABYBUDDY_MCP_ENABLE_TOOLS"),
             mcp_disable_tools=_csv("BABYBUDDY_MCP_DISABLE_TOOLS"),
             mcp_allowed_hosts=allowed_hosts,
+            babybuddy_media_url=media_url,
+            database_url=database_url,
             user_name=os.getenv("BABYBUDDY_USER_NAME", cls.user_name),
             audit_path=os.getenv("BABYBUDDY_AUDIT_PATH", cls.audit_path),
             web_host=os.getenv("AGENT_WEB_HOST", cls.web_host).strip(),

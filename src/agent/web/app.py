@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import hmac
+import json
 from contextlib import asynccontextmanager
 from hashlib import sha256
 from pathlib import Path
 from typing import AsyncIterator
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.datastructures import Headers
 from starlette.middleware.sessions import SessionMiddleware
@@ -27,6 +30,7 @@ from ..runtime.service import (
     ServiceError,
 )
 from ..runtime.store import ChatMessageRecord, ConversationRecord
+from .streaming import stream_event
 
 
 class LoginRequest(BaseModel):
@@ -177,6 +181,49 @@ def create_app(settings: Settings, service: AgentService | None = None) -> FastA
     async def current_session(request: Request) -> dict[str, str]:
         return {"status": "authenticated", "owner_id": owner_id(request)}
 
+    @app.get("/api/babybuddy-media/{media_path:path}")
+    async def babybuddy_media(media_path: str, request: Request) -> StreamingResponse:
+        """Proxy authenticated Baby Buddy images hidden behind its Docker hostname."""
+        owner_id(request)
+        parts = [part for part in media_path.split("/") if part]
+        if not parts or any(part in {".", ".."} for part in parts):
+            raise HTTPException(status_code=400, detail="invalid media path")
+        upstream_url = (
+            f"{settings.babybuddy_media_url}/media/"
+            + "/".join(quote(part, safe="") for part in parts)
+        )
+        client = httpx.AsyncClient(
+            timeout=settings.mcp_timeout,
+            follow_redirects=False,
+        )
+        try:
+            upstream = await client.send(
+                client.build_request("GET", upstream_url),
+                stream=True,
+            )
+        except httpx.HTTPError as exc:
+            await client.aclose()
+            raise HTTPException(status_code=502, detail="media unavailable") from exc
+        content_type = upstream.headers.get("content-type", "").split(";", 1)[0]
+        if upstream.status_code != 200 or not content_type.startswith("image/"):
+            await upstream.aclose()
+            await client.aclose()
+            raise HTTPException(status_code=404, detail="image not found")
+
+        async def content() -> AsyncIterator[bytes]:
+            try:
+                async for chunk in upstream.aiter_bytes():
+                    yield chunk
+            finally:
+                await upstream.aclose()
+                await client.aclose()
+
+        return StreamingResponse(
+            content(),
+            media_type=content_type,
+            headers={"Cache-Control": "private, max-age=300"},
+        )
+
     @app.get("/api/conversations")
     async def conversations(request: Request) -> dict[str, object]:
         try:
@@ -210,6 +257,19 @@ def create_app(settings: Settings, service: AgentService | None = None) -> FastA
             )
         return {"messages": [_chat_message_payload(message) for message in messages]}
 
+    @app.delete("/api/conversations/{session_id}")
+    async def delete_conversation(session_id: str, request: Request) -> dict[str, str]:
+        deleted = await runtime(request).delete_conversation(
+            session_id=session_id,
+            owner_id=owner_id(request),
+        )
+        if not deleted:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="conversation not found",
+            )
+        return {"status": "deleted"}
+
     @app.post("/api/chat")
     async def chat(payload: ChatRequest, request: Request) -> dict[str, object]:
         try:
@@ -235,6 +295,54 @@ def create_app(settings: Settings, service: AgentService | None = None) -> FastA
                 detail="agent unavailable",
             ) from exc
         return _outcome_payload(outcome)
+
+    @app.post("/api/chat/stream")
+    async def chat_stream(payload: ChatRequest, request: Request) -> StreamingResponse:
+        """Stream text and tool lifecycle events as newline-delimited JSON."""
+        owner = owner_id(request)
+        timezone = valid_timezone(payload.timezone)
+
+        async def events():
+            queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+
+            async def emit(event: object) -> None:
+                mapped = stream_event(event)
+                if mapped is not None:
+                    await queue.put(mapped)
+
+            async def run() -> None:
+                try:
+                    outcome = await runtime(request).chat(
+                        session_id=payload.session_id,
+                        owner_id=owner,
+                        text=payload.text.strip(),
+                        timezone=timezone,
+                        emit=emit,
+                    )
+                    await queue.put({"type": "outcome", **_outcome_payload(outcome)})
+                except BusySessionError as exc:
+                    await queue.put({"type": "error", "message": str(exc)})
+                except Exception:
+                    await queue.put({"type": "error", "message": "agent unavailable"})
+                finally:
+                    await queue.put({"type": "done"})
+
+            task = asyncio.create_task(run())
+            try:
+                while True:
+                    item = await queue.get()
+                    yield json.dumps(item, ensure_ascii=False, default=str) + "\n"
+                    if item["type"] == "done":
+                        break
+            finally:
+                if not task.done():
+                    task.cancel()
+
+        return StreamingResponse(
+            events(),
+            media_type="application/x-ndjson",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.post("/api/confirm")
     async def confirm(payload: ConfirmRequest, request: Request) -> dict[str, object]:
@@ -361,11 +469,13 @@ def create_app(settings: Settings, service: AgentService | None = None) -> FastA
     return app
 
 
-def _conversation_payload(record: ConversationRecord) -> dict[str, str]:
+def _conversation_payload(record: ConversationRecord) -> dict[str, object]:
     return {
         "session_id": record.session_id,
         "created_at": record.created_at,
         "updated_at": record.updated_at,
+        "title": record.title,
+        "message_count": record.message_count,
     }
 
 

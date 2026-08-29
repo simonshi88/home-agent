@@ -11,12 +11,11 @@ from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from ..agent import build_agent
+from ..agents import build_home_jarvis_team
 from ..audit import AuditLogger
-from ..chat import Conversation
 from ..config import Settings
-from ..mcp_client import build_mcp_client, build_toolkit, close_mcp, connect_mcp
-from ..prompts import SYSTEM_PROMPT, VOICE_SYSTEM_PROMPT
+from ..errors import MCPConnectionError
+from ..mcp_client import close_all_mcp
 from .store import (
     ChatMessageRecord,
     ConfirmationRecord,
@@ -27,6 +26,10 @@ from .store import (
 
 class ServiceError(RuntimeError):
     """Base error intended for the HTTP adapter."""
+
+
+class MCPUnavailableError(ServiceError):
+    """Raised when a configured MCP server cannot be reached or connected."""
 
 
 class BusySessionError(ServiceError):
@@ -48,8 +51,8 @@ class ChatOutcome:
 
 @dataclass
 class _ConversationRuntime:
-    conversation: Conversation
-    client: Any
+    conversation: Any
+    clients: tuple[Any, ...]
     active_turn: "_TurnState | None" = None
 
 
@@ -60,6 +63,7 @@ class _TurnState:
     response: asyncio.Future[ChatOutcome]
     persist_history: bool = False
     voice_confirmation: bool = False
+    emit: Any | None = None
     task: asyncio.Task[None] | None = None
 
 
@@ -124,7 +128,7 @@ class AgentService:
             return_exceptions=True,
         )
         await asyncio.gather(
-            *(close_mcp(runtime.client) for runtime in runtimes),
+            *(close_all_mcp(runtime.clients) for runtime in runtimes),
             return_exceptions=True,
         )
         self._conversations.clear()
@@ -139,12 +143,14 @@ class AgentService:
         text: str,
         timezone: str,
         voice_confirmation: bool = False,
+        emit: Any | None = None,
     ) -> ChatOutcome:
         """Start one turn with server-derived local-time context."""
         self._require_started()
         self.store.ensure_session(session_id, owner_id)
         runtime = await self._runtime_for(
             session_id,
+            owner_id=owner_id,
             voice_confirmation=voice_confirmation,
         )
         active_turn = runtime.active_turn
@@ -158,6 +164,7 @@ class AgentService:
             response=response,
             persist_history=not voice_confirmation,
             voice_confirmation=voice_confirmation,
+            emit=emit,
         )
         if turn.persist_history:
             self.store.record_chat_message(
@@ -208,14 +215,13 @@ class AgentService:
     async def today(self, *, owner_id: str) -> TodaySnapshot:
         """Collect a dashboard snapshot through read-only agent behavior."""
         self._require_started()
-        client = build_mcp_client(self.settings)
-        await connect_mcp(client)
         try:
-            conversation = Conversation(
-                agent=build_agent(self.settings, build_toolkit(client)),
-                user_name=self.settings.user_name,
-                audit=self.audit,
-            )
+            team = await build_home_jarvis_team(self.settings, self.audit)
+        except MCPConnectionError as exc:
+            raise MCPUnavailableError(str(exc)) from exc
+        if team.unavailable:
+            self.audit.log("mcp_unavailable", servers=list(team.unavailable))
+        try:
 
             async def allow_read_tools(tool_calls: tuple[Any, ...]) -> list[bool]:
                 decisions = [
@@ -235,10 +241,13 @@ class AgentService:
                     )
                 return decisions
 
-            reply = await conversation.reply(_TODAY_PROMPT, confirm=allow_read_tools)
+            reply = await team.conversation.reply(
+                _TODAY_PROMPT,
+                confirm=allow_read_tools,
+            )
             return _parse_today_snapshot(reply)
         finally:
-            await close_mcp(client)
+            await close_all_mcp(team.clients)
 
     def conversations(self, *, owner_id: str) -> list[ConversationRecord]:
         """List persisted browser conversations owned by the active cookie session."""
@@ -258,31 +267,89 @@ class AgentService:
             owner_id=owner_id,
         )
 
+    async def delete_conversation(self, *, session_id: str, owner_id: str) -> bool:
+        """Remove an owned browser conversation and dispose of its live runtime."""
+        self._require_started()
+        if (
+            self.store.list_chat_messages(
+                session_id=session_id,
+                owner_id=owner_id,
+            )
+            is None
+        ):
+            return False
+        runtime = self._conversations.get(session_id)
+        if runtime and runtime.active_turn and runtime.active_turn.task:
+            runtime.active_turn.task.cancel()
+            await asyncio.gather(runtime.active_turn.task, return_exceptions=True)
+        for confirmation_id, pending in tuple(self._pending.items()):
+            if pending.record.session_id == session_id:
+                self._pending.pop(confirmation_id, None)
+        runtime = self._conversations.pop(session_id, None)
+        if runtime is not None:
+            await close_all_mcp(runtime.clients)
+        deleted = self.store.delete_conversation(
+            session_id=session_id,
+            owner_id=owner_id,
+        )
+        if deleted:
+            self.audit.log("conversation_deleted", session_id=session_id)
+        return deleted
+
     async def _runtime_for(
         self,
         session_id: str,
         *,
+        owner_id: str,
         voice_confirmation: bool,
     ) -> _ConversationRuntime:
         runtime = self._conversations.get(session_id)
         if runtime is not None:
             return runtime
-        client = build_mcp_client(self.settings)
-        await connect_mcp(client)
-        runtime = _ConversationRuntime(
-            conversation=Conversation(
-                agent=build_agent(
-                    self.settings,
-                    build_toolkit(client),
-                    system_prompt=(
-                        VOICE_SYSTEM_PROMPT if voice_confirmation else SYSTEM_PROMPT
-                    ),
-                ),
-                user_name=self.settings.user_name,
-                audit=self.audit,
-            ),
-            client=client,
+        from agentscope.message import AssistantMsg, UserMsg
+        from agentscope.state import AgentState
+
+        history = self.store.list_chat_messages(
+            session_id=session_id,
+            owner_id=owner_id,
         )
+        context = []
+        for message in history or []:
+            if message.role == "user":
+                context.append(
+                    UserMsg(
+                        name=self.settings.user_name,
+                        content=message.content,
+                        id=message.id,
+                        created_at=message.created_at,
+                    ),
+                )
+            elif message.status != "failed":
+                context.append(
+                    AssistantMsg(
+                        name="agent",
+                        content=message.content,
+                        id=message.id,
+                        created_at=message.created_at,
+                    ),
+                )
+        agent_state = AgentState(session_id=session_id, context=context)
+        try:
+            team = await build_home_jarvis_team(
+                self.settings,
+                self.audit,
+                leader_state=agent_state,
+                voice=voice_confirmation,
+            )
+        except MCPConnectionError as exc:
+            raise MCPUnavailableError(str(exc)) from exc
+        if team.unavailable:
+            self.audit.log(
+                "mcp_unavailable",
+                session_id=session_id,
+                servers=list(team.unavailable),
+            )
+        runtime = _ConversationRuntime(team.conversation, team.clients)
         self._conversations[session_id] = runtime
         return runtime
 
@@ -293,13 +360,19 @@ class AgentService:
         text: str,
     ) -> None:
         try:
-            reply = await runtime.conversation.reply(
-                text,
-                confirm=(
+            reply_kwargs = {
+                "confirm": (
                     self._auto_confirm_tools
                     if turn.voice_confirmation
                     else lambda calls: self._confirm_tools(turn, calls)
                 ),
+            }
+            if turn.emit is not None:
+                reply_kwargs["emit"] = turn.emit
+            reply = await runtime.conversation.reply(text, **reply_kwargs)
+            reply = _normalize_babybuddy_media_links(
+                reply,
+                self.settings.babybuddy_media_url,
             )
             outcome = ChatOutcome(status="completed", message=reply)
             self._set_response(turn, outcome)
@@ -326,6 +399,7 @@ class AgentService:
         """Let the voice-agent prompt collect confirmation for BabyBuddy calls."""
         decisions = [
             str(tool_call.name).startswith("mcp__babybuddy__")
+            or str(tool_call.name) in {"delegate_to_baby", "delegate_to_exercise"}
             for tool_call in tool_calls
         ]
         self.audit.log(
@@ -430,6 +504,8 @@ class AgentService:
         """Allow an explicit read allowlist or stable read verbs, never mutations."""
         if tool_name in self.settings.web_read_tool_allowlist:
             return True
+        if tool_name in {"delegate_to_baby", "delegate_to_exercise"}:
+            return True
         return any(
             marker in tool_name
             for marker in ("_list_", "_get_", "_retrieve_", "_search_")
@@ -443,6 +519,16 @@ class AgentService:
 def _confirmation_description(tool_names: tuple[str, ...]) -> str:
     labels = "、".join(tool_names)
     return f"确认执行 Baby Buddy 操作：{labels}？"
+
+
+def _normalize_babybuddy_media_links(reply: str, public_origin: str) -> str:
+    """Replace Baby Buddy's Docker-internal absolute media URLs."""
+    return re.sub(
+        r"https?://babybuddy(?::\d+)?(?=/media/)",
+        public_origin.rstrip("/"),
+        reply,
+        flags=re.IGNORECASE,
+    )
 
 
 def _parse_today_snapshot(reply: str) -> TodaySnapshot:

@@ -31,6 +31,8 @@ class ConversationRecord:
     session_id: str
     created_at: str
     updated_at: str
+    title: str = ""
+    message_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -142,7 +144,12 @@ class ServiceStore:
         """Return the browser owner's conversations in most-recent-first order."""
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT id, created_at, updated_at FROM web_sessions "
+                "SELECT id, created_at, updated_at, "
+                "(SELECT content FROM chat_messages WHERE session_id = web_sessions.id "
+                "AND role = 'user' ORDER BY created_at, id LIMIT 1) AS title, "
+                "(SELECT count(*) FROM chat_messages "
+                "WHERE session_id = web_sessions.id) AS message_count "
+                "FROM web_sessions "
                 "WHERE owner_id = ? AND EXISTS ("
                 "SELECT 1 FROM chat_messages WHERE session_id = web_sessions.id"
                 ") ORDER BY updated_at DESC, id DESC",
@@ -153,6 +160,8 @@ class ServiceStore:
                 session_id=row["id"],
                 created_at=row["created_at"],
                 updated_at=row["updated_at"],
+                title=_conversation_title(row["title"] or ""),
+                message_count=int(row["message_count"]),
             )
             for row in rows
         ]
@@ -177,6 +186,30 @@ class ServiceStore:
                 (session_id, owner_id),
             ).fetchall()
         return [_chat_message_from_row(row) for row in rows]
+
+    def delete_conversation(self, *, session_id: str, owner_id: str) -> bool:
+        """Delete one conversation and its local metadata if owned by the caller."""
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            owned = connection.execute(
+                "SELECT 1 FROM web_sessions WHERE id = ? AND owner_id = ?",
+                (session_id, owner_id),
+            ).fetchone()
+            if owned is None:
+                connection.execute("ROLLBACK")
+                return False
+            connection.execute(
+                "DELETE FROM confirmations WHERE session_id = ?", (session_id,)
+            )
+            connection.execute(
+                "DELETE FROM turn_audit WHERE session_id = ?", (session_id,)
+            )
+            connection.execute(
+                "DELETE FROM chat_messages WHERE session_id = ?", (session_id,)
+            )
+            connection.execute("DELETE FROM web_sessions WHERE id = ?", (session_id,))
+            connection.execute("COMMIT")
+        return True
 
     def record_chat_message(
         self,
@@ -369,3 +402,8 @@ def _chat_message_from_row(row: sqlite3.Row) -> ChatMessageRecord:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _conversation_title(content: str, limit: int = 20) -> str:
+    title = " ".join(content.split())
+    return title if len(title) <= limit else f"{title[:limit]}…"

@@ -1,17 +1,19 @@
-# AgentScope 通用 Agent
+# Home Jarvis
 
-这是一个使用 AgentScope 2.x 构建的通用对话 Agent。当前默认连接 BabyBuddy 的 MCP 服务，但核心包名和运行时设计保持通用，后续可以接入其他工作系统、模型供应商或 Web/API 入口。
+这是一个使用 AgentScope 2.x 构建的家庭多 Agent 系统。用户只与 Home Jarvis 主 Agent 对话；主 Agent 按领域委派给能力隔离的专项 Agent。Web 端基于 assistant-ui，支持流式输出、委派/工具过程、HITL 和历史记录。
 
 ## 架构
 
 ```text
-CLI / Web 入口
-    -> Conversation
-    -> AgentScope Agent
-    -> Toolkit
-    -> MCPClient (Streamable HTTP)
-    -> BabyBuddy MCP
+CLI / Web / Home Assistant
+    -> Home Jarvis（leader，仅持有委派工具和主会话上下文）
+       ├─ delegate_to_baby -> Baby Specialist
+       │                       └─ BabyBuddy MCP
+       └─ delegate_to_exercise -> Exercise Specialist
+                                   └─ query_exercises -> PostgreSQL exercise_catalog
 ```
+
+每个 Toolkit 只属于一个 Agent：Home Jarvis 不持有领域工具；Baby Specialist 独占 BabyBuddy MCP；Exercise Specialist 独占只读 `query_exercises`。子 Agent 的事件、工具过程和 HITL 会透传到 leader 的页面流。
 
 应用层不直接调用 Anthropic、OpenAI 或 MCP SDK 的底层循环；模型、工具和消息循环都通过 AgentScope API 装配。
 
@@ -68,6 +70,14 @@ BABYBUDDY_MCP_TIMEOUT=30
 
 该 URL 使用 AgentScope 的 Streamable HTTP MCP transport。MCP host 有 allowlist 校验，修改地址时同步设置 `BABYBUDDY_MCP_ALLOWED_HOSTS`。
 
+动作数据库配置：
+
+```text
+DATABASE_URL=postgresql://postgres:123456@192.168.5.13:5432/ExerciseDB
+```
+
+`query_exercises` 支持搜索、按四位 ID 取详情和读取筛选项。数据库凭据只存在服务端；浏览器和模型都不能提交任意 SQL。
+
 ## 运行
 
 检查配置，不连接 MCP：
@@ -122,20 +132,37 @@ Cookie、Agent 回复和待确认操作；不会收到 LLM key、Baby Buddy Toke
 
 ### Docker 部署
 
-Docker Compose 使用 Ubuntu 构建 API 和 Nginx 服务。Nginx 提供 React SPA，并将
-`/api/`、`/chat`、`/api/ha/chat` 和 `/health` 反向代理到 API；其他路径回退到 SPA。
-先复制并填写 `.env`，尤其是 `AGENT_WEB_PASSWORD`、`AGENT_WEB_SESSION_SECRET`、模型凭据
-和 MCP 配置，然后运行：
+Docker 镜像使用独立的 Node 和 Python 构建阶段，最终运行镜像只包含 Python 运行时、
+Home Jarvis 后端和编译后的 React 页面。FastAPI 在同一个来源提供页面与 API，不需要
+额外的 Nginx 容器。先复制并填写 `.env`，尤其是 `AGENT_WEB_PASSWORD`、
+`AGENT_WEB_SESSION_SECRET`、模型凭据、MCP、Baby Buddy 媒体地址和动作数据库配置，然后运行：
 
 ```bash
 docker compose up --build -d
 ```
 
-默认对外暴露 `http://<host>/`。持久数据使用 Compose 管理的 `agent_data` 卷，并在 API
-容器中挂载为 `/data`；SQLite 数据库和审计日志分别保存为
+默认地址是 `http://<host>:18080/`；可通过 `.env` 中的 `HOME_JARVIS_PORT` 修改宿主端口，
+容器内部始终监听 8000。持久数据保存在名为 `home-jarvis-data` 的 Docker volume，挂载为
+`/data`；SQLite 数据库和审计日志分别保存为
 `/data/agent-web.sqlite3` 和 `/data/audit/events.jsonl`。本地开发仍使用 `.env` 中的
 `var/` 路径，不受 Compose 覆盖影响。可用 `GET /health` 检查 API 进程状态；该检查不需要
 认证，也不会连接模型或 MCP 服务。
+
+容器以 UID/GID `10001` 的非 root 用户运行，移除了 Linux capabilities，并启用了
+`no-new-privileges`。Baby Buddy 图片由后端从 `BABYBUDDY_MEDIA_URL`（默认
+`http://baby.home`）读取后同源代理给浏览器，因此该域名必须能从 Docker 容器内解析。
+
+常用运维命令：
+
+```bash
+docker compose ps
+docker compose logs -f app
+docker compose up --build -d
+docker compose down
+```
+
+`docker compose down` 不会删除聊天数据；只有显式执行 `docker compose down -v` 才会删除
+持久化 volume。
 
 HTTP 接口：
 
@@ -161,9 +188,9 @@ Home Assistant 使用短语音提示完成写入确认：助手会先复述将�
 AgentScope 对话上下文。因此当 Agent 追问“只有小便还是也有大便？”时，直接在输入框
 补充即可，字段齐全后才会显示写入确认卡。
 
-服务使用 SQLite 只保存会话归属、待确认操作的脱敏元数据和回复哈希，不复制 Baby
-Buddy 育儿记录。AgentScope 上下文与可恢复工具调用仅存在于运行内存中：服务重启时，
-所有待确认操作都会标记为过期，必须重新提交，绝不会在重启后自动写入。
+服务使用 SQLite 保存会话归属、聊天文本、待确认操作的脱敏元数据和回复哈希，不复制
+Baby Buddy 育儿记录。服务重启后会按 `session_id` 将消息恢复为 Home Jarvis 的主上下文；
+不可安全恢复的工具调用确认会标记为过期，必须重新提交，绝不会在重启后自动写入。
 
 ## 写入安全
 
@@ -186,6 +213,7 @@ uv run ruff check src tests
 ## 目录
 
 - `src/agent/config.py`：环境变量和边界校验
+- `src/agent/agents/`：Home Jarvis、专项 Agent、角色提示和团队装配
 - `src/agent/model_factory.py`：AgentScope 模型 provider 工厂
 - `src/agent/mcp_client.py`：MCPClient 生命周期和 Toolkit 装配
 - `src/agent/agent.py`：通用 AgentScope Agent

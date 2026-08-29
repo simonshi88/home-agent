@@ -9,18 +9,11 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from .agent import build_agent
+from .agents import build_home_jarvis_team
 from .audit import AuditLogger
-from .chat import Conversation
 from .config import Settings
 from .errors import AgentApplicationError
-from .mcp_client import (
-    build_mcp_client,
-    build_toolkit,
-    close_mcp,
-    connect_mcp,
-    list_mcp_tools,
-)
+from .mcp_client import close_all_mcp, list_mcp_tools
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -78,20 +71,18 @@ def _emit(event: Any) -> None:
 
 
 async def _run(settings: Settings, once: str | None) -> None:
-    client = build_mcp_client(settings)
-    await connect_mcp(client)
+    team = await build_home_jarvis_team(
+        settings,
+        AuditLogger(settings.audit_path),
+    )
     try:
-        tools = await list_mcp_tools(client)
-        print(f"已连接 MCP：{settings.mcp_url}")
-        print(f"可用工具：{', '.join(tools) if tools else '无'}")
-
-        toolkit = build_toolkit(client)
-        agent = build_agent(settings, toolkit)
-        conversation = Conversation(
-            agent=agent,
-            user_name=settings.user_name,
-            audit=AuditLogger(settings.audit_path),
-        )
+        for name in team.unavailable:
+            print(f"[警告] MCP 连接失败，已跳过：{name}")
+        for client in team.clients:
+            tools = await list_mcp_tools(client)
+            print(f"Baby 专项 Agent 已连接 MCP：{client.name}")
+            print(f"可用工具：{', '.join(tools) if tools else '无'}")
+        conversation = team.conversation
 
         if once is not None:
             await conversation.reply(once, confirm=_confirm, emit=_emit)
@@ -114,7 +105,7 @@ async def _run(settings: Settings, once: str | None) -> None:
                 continue
             await conversation.reply(text, confirm=_confirm, emit=_emit)
     finally:
-        await close_mcp(client)
+        await close_all_mcp(team.clients)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -128,7 +119,8 @@ def main(argv: list[str] | None = None) -> int:
                 "配置有效："
                 f" provider={settings.model_provider},"
                 f" model={settings.model_name},"
-                f" mcp={settings.mcp_url}",
+                f" mcp={settings.mcp_url},"
+                " exercise_database=configured",
             )
             return 0
         asyncio.run(_run(settings, args.once))

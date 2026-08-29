@@ -14,6 +14,24 @@ def test_settings_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.model_name == "claude-opus-4-8"
     assert settings.mcp_url == "http://192.168.5.13:2001/mcp"
     assert settings.mcp_stateful is True
+    assert settings.database_url.endswith("/ExerciseDB")
+    assert settings.babybuddy_media_url == "http://baby.home"
+
+
+def test_babybuddy_media_url_must_be_http(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("BABYBUDDY_MEDIA_URL", "file:///tmp/media")
+
+    with pytest.raises(ConfigurationError, match="BABYBUDDY_MEDIA_URL"):
+        Settings.from_env()
+
+
+def test_database_url_must_be_postgresql(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///exercise.db")
+
+    with pytest.raises(ConfigurationError, match="PostgreSQL"):
+        Settings.from_env()
 
 
 def test_provider_key_is_required(monkeypatch: pytest.MonkeyPatch) -> None:

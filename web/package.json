@@ -1,5 +1,5 @@
 {
-  "name": "baby-buddy-web",
+  "name": "home-jarvis-web",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -8,14 +8,19 @@
     "build": "tsc -b && vite build"
   },
   "dependencies": {
+    "@assistant-ui/react": "^0.15.17",
+    "@assistant-ui/react-markdown": "^0.14.13",
+    "lucide-react": "^1.37.0",
     "react": "latest",
-    "react-dom": "latest"
+    "react-dom": "latest",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@tailwindcss/vite": "latest",
     "@types/react": "latest",
     "@types/react-dom": "latest",
     "@vitejs/plugin-react": "latest",
+    "prettier": "^3.9.6",
     "tailwindcss": "latest",
     "typescript": "latest",
     "vite": "latest"

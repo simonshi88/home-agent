@@ -89,5 +89,13 @@ def test_chat_messages_are_owner_scoped_and_ordered(tmp_path) -> None:
         ("assistant", "确认写入吗？", "needs_confirmation"),
     ]
     assert conversations[0].session_id == "phone-a"
+    assert conversations[0].title == "宝宝刚喝了 120 毫升奶"
+    assert conversations[0].message_count == 2
     assert store.list_chat_messages(session_id="phone-a", owner_id="browser-b") is None
     assert store.list_conversations(owner_id="browser-b") == []
+
+    assert (
+        store.delete_conversation(session_id="phone-a", owner_id="browser-b") is False
+    )
+    assert store.delete_conversation(session_id="phone-a", owner_id="browser-a") is True
+    assert store.list_chat_messages(session_id="phone-a", owner_id="browser-a") is None
