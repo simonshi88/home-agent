@@ -339,6 +339,7 @@ class AgentService:
                 self.settings,
                 self.audit,
                 leader_state=agent_state,
+                owner_id=owner_id,
                 voice=voice_confirmation,
             )
         except MCPConnectionError as exc:
@@ -399,7 +400,7 @@ class AgentService:
         """Let the voice-agent prompt collect confirmation for BabyBuddy calls."""
         decisions = [
             str(tool_call.name).startswith("mcp__babybuddy__")
-            or str(tool_call.name) in {"delegate_to_baby", "delegate_to_exercise"}
+            or self._is_read_only_tool(str(tool_call.name))
             for tool_call in tool_calls
         ]
         self.audit.log(
@@ -504,7 +505,13 @@ class AgentService:
         """Allow an explicit read allowlist or stable read verbs, never mutations."""
         if tool_name in self.settings.web_read_tool_allowlist:
             return True
-        if tool_name in {"delegate_to_baby", "delegate_to_exercise"}:
+        if tool_name in {
+            "delegate_to_baby",
+            "delegate_to_exercise",
+            "delegate_to_paperless",
+            "query_exercises",
+            "query_paperless",
+        }:
             return True
         return any(
             marker in tool_name
@@ -518,7 +525,9 @@ class AgentService:
 
 def _confirmation_description(tool_names: tuple[str, ...]) -> str:
     labels = "、".join(tool_names)
-    return f"确认执行 Baby Buddy 操作：{labels}？"
+    if "upload_paperless_document" in tool_names:
+        return "确认将这个文档上传到 Paperless？"
+    return f"确认执行写入操作：{labels}？"
 
 
 def _normalize_babybuddy_media_links(reply: str, public_origin: str) -> str:

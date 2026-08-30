@@ -18,12 +18,24 @@ import {
   type ToolCallMessagePartProps,
 } from "@assistant-ui/react";
 import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
-import { Check, LogOut, Plus, Send, Trash2, Wrench } from "lucide-react";
+import {
+  Check,
+  FileText,
+  LogOut,
+  Menu,
+  Paperclip,
+  Plus,
+  Send,
+  Trash2,
+  Wrench,
+  X,
+} from "lucide-react";
 import remarkGfm from "remark-gfm";
 import {
   api,
   type ChatResponse,
   type Conversation,
+  type StagedUpload,
   type StreamEvent,
 } from "../../lib/api";
 
@@ -57,6 +69,18 @@ type ChatMessage =
     };
 const id = () => crypto.randomUUID();
 const storageKey = (owner: string) => `agent-conversation:${owner}`;
+const sessionPath = (sessionId: string) =>
+  `/chat/${encodeURIComponent(sessionId)}`;
+const sessionFromPath = () => {
+  const match = window.location.pathname.match(/^\/chat\/([^/]+)\/?$/);
+  if (!match) return null;
+  try {
+    const value = decodeURIComponent(match[1]);
+    return /^[A-Za-z0-9._-]{1,128}$/.test(value) ? value : null;
+  } catch {
+    return null;
+  }
+};
 
 function ToolProcess({
   toolName,
@@ -69,7 +93,10 @@ function ToolProcess({
   const labels: Record<string, string> = {
     delegate_to_baby: "委派给 Baby 助手",
     delegate_to_exercise: "委派给动作助手",
+    delegate_to_paperless: "委派给文档助手",
     query_exercises: "查询动作数据库",
+    query_paperless: "查询 Paperless 文档",
+    upload_paperless_document: "上传文档到 Paperless",
   };
   const delegation = toolName.startsWith("delegate_to_");
   return (
@@ -181,7 +208,17 @@ function ChatBubble() {
     </MessagePrimitive.Root>
   );
 }
-function Thread() {
+function Thread({
+  upload,
+  uploading,
+  onDocument,
+  onRemoveUpload,
+}: {
+  upload: StagedUpload | null;
+  uploading: boolean;
+  onDocument: (file: File) => void;
+  onRemoveUpload: () => void;
+}) {
   return (
     <ThreadPrimitive.Root className="thread-root">
       <ThreadPrimitive.Viewport className="thread-viewport">
@@ -199,12 +236,38 @@ function Thread() {
                 <strong>动作助手</strong>
                 <small>动作步骤、器械与目标肌群</small>
               </div>
+              <div>
+                <strong>文档助手</strong>
+                <small>搜索、查看和上传家庭文档</small>
+              </div>
             </div>
           </div>
         </ThreadPrimitive.Empty>
         <ThreadPrimitive.Messages components={{ Message: ChatBubble }} />
         <div className="composer-wrap">
+          {upload && (
+            <div className="upload-chip">
+              <FileText size={16} />
+              <span>{upload.filename}</span>
+              <button onClick={onRemoveUpload} aria-label="移除待上传文档">
+                <X size={16} />
+              </button>
+            </div>
+          )}
           <ComposerPrimitive.Root className="composer">
+            <label className={`attach ${uploading ? "uploading" : ""}`}>
+              <Paperclip size={19} />
+              <span className="sr-only">选择要上传到 Paperless 的文档</span>
+              <input
+                type="file"
+                disabled={uploading}
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) onDocument(file);
+                  event.target.value = "";
+                }}
+              />
+            </label>
             <ComposerPrimitive.Input
               autoFocus
               placeholder="告诉 Home Jarvis 你想做什么…"
@@ -228,24 +291,52 @@ export function Chat({
   ownerId: string;
   onLogout: () => Promise<void>;
 }) {
+  const initialSessionRef = useRef(
+    sessionFromPath() || localStorage.getItem(storageKey(ownerId)) || id(),
+  );
   const [sessionId, setSessionId] = useState(
-    () => localStorage.getItem(storageKey(ownerId)) || id(),
+    initialSessionRef.current,
   );
   const sessionRef = useRef(sessionId);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [running, setRunning] = useState(false);
   const [pending, setPending] = useState<ChatResponse | null>(null);
+  const [stagedUpload, setStagedUpload] = useState<StagedUpload | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const refresh = useCallback(
     async () => setConversations((await api.conversations()).conversations),
     [],
   );
   const load = useCallback(
-    async (target: string) => {
+    async (
+      target: string,
+      options: { history?: "push" | "replace" | "none" } = {},
+    ) => {
       sessionRef.current = target;
       setSessionId(target);
+      setPending(null);
+      setStagedUpload(null);
+      setSidebarOpen(false);
       localStorage.setItem(storageKey(ownerId), target);
-      const response = await api.conversationMessages(target);
+      if (options.history === "push")
+        window.history.pushState({ sessionId: target }, "", sessionPath(target));
+      if (options.history === "replace")
+        window.history.replaceState(
+          { sessionId: target },
+          "",
+          sessionPath(target),
+        );
+      let response;
+      try {
+        response = await api.conversationMessages(target);
+      } catch {
+        // A newly generated route has no server-side messages until its first
+        // user turn. It is still a valid, isolated conversation session.
+        setMessages([]);
+        return;
+      }
       setMessages(
         response.messages.map((message): ChatMessage =>
           message.role === "assistant"
@@ -269,11 +360,29 @@ export function Chat({
     void (async () => {
       const list = (await api.conversations()).conversations;
       setConversations(list);
-      const saved = localStorage.getItem(storageKey(ownerId));
-      if (saved && list.some((item) => item.session_id === saved))
-        await load(saved);
+      const target = initialSessionRef.current;
+      const routeSession = sessionFromPath();
+      await load(target, {
+        history: routeSession === target ? "none" : "replace",
+      });
     })();
-  }, [load, ownerId]);
+  }, [load]);
+  useEffect(() => {
+    const onPopState = () => {
+      const target = sessionFromPath();
+      if (!target || running) {
+        window.history.replaceState(
+          { sessionId: sessionRef.current },
+          "",
+          sessionPath(sessionRef.current),
+        );
+        return;
+      }
+      void load(target, { history: "none" });
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [load, running]);
   const updateAssistant = (
     messageId: string,
     update: (message: ChatMessage) => ChatMessage,
@@ -385,205 +494,215 @@ export function Chat({
         },
       ]);
       try {
-        await api.streamChat(sessionRef.current, text, (event: StreamEvent) => {
-          if (event.type === "text_start")
-            updateAssistant(assistantId, (item) => ({
-              ...item,
-              content:
-                item.content.length === 1 &&
-                item.content[0]?.type === "text" &&
-                !item.content[0].text
-                  ? [{ type: "text", text: "", blockId: event.block_id }]
-                  : [
-                      ...item.content,
-                      { type: "text", text: "", blockId: event.block_id },
-                    ],
-            }));
-          if (event.type === "text_delta")
-            updateAssistant(assistantId, (item) => ({
-              ...item,
-              content: item.content.map((part) =>
-                part.type === "text" &&
-                (!part.blockId || part.blockId === event.block_id)
-                  ? {
-                      ...part,
-                      blockId: event.block_id,
-                      text: part.text + event.delta,
-                    }
-                  : part,
-              ),
-            }));
-          if (event.type === "thinking_start")
-            updateAssistant(assistantId, (item) => ({
-              ...item,
-              content: [
-                ...item.content,
-                { type: "reasoning", text: "", blockId: event.block_id },
-              ],
-            }));
-          if (event.type === "thinking_delta")
-            updateAssistant(assistantId, (item) => ({
-              ...item,
-              content: item.content.map((part) =>
-                part.type === "reasoning" && part.blockId === event.block_id
-                  ? { ...part, text: part.text + event.delta }
-                  : part,
-              ),
-            }));
-          if (
-            event.type === "data_start" &&
-            event.media_type.startsWith("image/")
-          )
-            updateAssistant(assistantId, (item) => ({
-              ...item,
-              content: [
-                ...item.content,
-                {
-                  type: "image",
-                  image: `data:${event.media_type};base64,`,
-                  mediaType: event.media_type,
-                  blockId: event.block_id,
-                },
-              ],
-            }));
-          if (
-            event.type === "data_delta" &&
-            event.media_type.startsWith("image/")
-          )
-            updateAssistant(assistantId, (item) => ({
-              ...item,
-              content: item.content.map((part) =>
-                part.type === "image" && part.blockId === event.block_id
-                  ? { ...part, image: part.image + event.data }
-                  : part,
-              ),
-            }));
-          if (event.type === "tool_start")
-            updateAssistant(assistantId, (item) => ({
-              ...item,
-              content: [
-                ...item.content,
-                {
-                  type: "tool-call",
-                  toolCallId: event.tool_call_id || id(),
-                  toolName: event.tool_name,
-                  args: {},
-                },
-              ],
-            }));
-          if (event.type === "tool_args_delta")
-            updateAssistant(assistantId, (item) => ({
-              ...item,
-              content: item.content.map((part) =>
-                part.type === "tool-call" &&
-                part.toolCallId === event.tool_call_id
-                  ? { ...part, argsText: (part.argsText || "") + event.delta }
-                  : part,
-              ),
-            }));
-          if (event.type === "tool_result_delta")
-            updateAssistant(assistantId, (item) => ({
-              ...item,
-              content: item.content.map((part) =>
-                part.type === "tool-call" &&
-                part.toolCallId === event.tool_call_id
-                  ? {
-                      ...part,
-                      artifact: `${part.artifact || ""}${event.delta}`,
-                    }
-                  : part,
-              ),
-            }));
-          if (event.type === "tool_result_end")
-            updateAssistant(assistantId, (item) => ({
-              ...item,
-              content: (() => {
-                const content = item.content.map((part) =>
+        await api.streamChat(
+          sessionRef.current,
+          text,
+          (event: StreamEvent) => {
+            if (event.type === "text_start")
+              updateAssistant(assistantId, (item) => ({
+                ...item,
+                content:
+                  item.content.length === 1 &&
+                  item.content[0]?.type === "text" &&
+                  !item.content[0].text
+                    ? [{ type: "text", text: "", blockId: event.block_id }]
+                    : [
+                        ...item.content,
+                        { type: "text", text: "", blockId: event.block_id },
+                      ],
+              }));
+            if (event.type === "text_delta")
+              updateAssistant(assistantId, (item) => ({
+                ...item,
+                content: item.content.map((part) =>
+                  part.type === "text" &&
+                  (!part.blockId || part.blockId === event.block_id)
+                    ? {
+                        ...part,
+                        blockId: event.block_id,
+                        text: part.text + event.delta,
+                      }
+                    : part,
+                ),
+              }));
+            if (event.type === "thinking_start")
+              updateAssistant(assistantId, (item) => ({
+                ...item,
+                content: [
+                  ...item.content,
+                  { type: "reasoning", text: "", blockId: event.block_id },
+                ],
+              }));
+            if (event.type === "thinking_delta")
+              updateAssistant(assistantId, (item) => ({
+                ...item,
+                content: item.content.map((part) =>
+                  part.type === "reasoning" && part.blockId === event.block_id
+                    ? { ...part, text: part.text + event.delta }
+                    : part,
+                ),
+              }));
+            if (
+              event.type === "data_start" &&
+              event.media_type.startsWith("image/")
+            )
+              updateAssistant(assistantId, (item) => ({
+                ...item,
+                content: [
+                  ...item.content,
+                  {
+                    type: "image",
+                    image: `data:${event.media_type};base64,`,
+                    mediaType: event.media_type,
+                    blockId: event.block_id,
+                  },
+                ],
+              }));
+            if (
+              event.type === "data_delta" &&
+              event.media_type.startsWith("image/")
+            )
+              updateAssistant(assistantId, (item) => ({
+                ...item,
+                content: item.content.map((part) =>
+                  part.type === "image" && part.blockId === event.block_id
+                    ? { ...part, image: part.image + event.data }
+                    : part,
+                ),
+              }));
+            if (event.type === "tool_start")
+              updateAssistant(assistantId, (item) => ({
+                ...item,
+                content: [
+                  ...item.content,
+                  {
+                    type: "tool-call",
+                    toolCallId: event.tool_call_id || id(),
+                    toolName: event.tool_name,
+                    args: {},
+                  },
+                ],
+              }));
+            if (event.type === "tool_args_delta")
+              updateAssistant(assistantId, (item) => ({
+                ...item,
+                content: item.content.map((part) =>
+                  part.type === "tool-call" &&
+                  part.toolCallId === event.tool_call_id
+                    ? { ...part, argsText: (part.argsText || "") + event.delta }
+                    : part,
+                ),
+              }));
+            if (event.type === "tool_result_delta")
+              updateAssistant(assistantId, (item) => ({
+                ...item,
+                content: item.content.map((part) =>
                   part.type === "tool-call" &&
                   part.toolCallId === event.tool_call_id
                     ? {
                         ...part,
-                        result: part.result ?? { completed: true },
-                        isError:
-                          event.state === "error" || event.state === "denied",
+                        artifact: `${part.artifact || ""}${event.delta}`,
                       }
                     : part,
-                );
-                const toolResult = content.find(
-                  (part): part is ToolPart =>
+                ),
+              }));
+            if (event.type === "tool_result_end")
+              updateAssistant(assistantId, (item) => ({
+                ...item,
+                content: (() => {
+                  const content = item.content.map((part) =>
                     part.type === "tool-call" &&
-                    part.toolCallId === event.tool_call_id,
-                )?.artifact;
-                const existing = new Set(
-                  content
-                    .filter((part): part is ImagePart => part.type === "image")
-                    .map((part) => part.image),
-                );
-                return [
-                  ...content,
-                  ...imagesFromText(toolResult || "").filter(
-                    (part) => !existing.has(part.image),
-                  ),
-                ];
-              })(),
-            }));
-          if (event.type === "human_required")
-            updateAssistant(assistantId, (item) => ({
-              ...item,
-              content: item.content.map((part) =>
-                part.type === "tool-call" &&
-                event.tool_call_ids.includes(part.toolCallId)
-                  ? { ...part, waiting: true }
-                  : part,
-              ),
-            }));
-          if (event.type === "hint")
-            updateAssistant(assistantId, (item) => ({
-              ...item,
-              content: [
-                ...item.content,
-                {
-                  type: "text",
-                  text: `> ${event.source ? `**${event.source}**：` : ""}${event.hint}`,
-                  blockId: event.block_id,
-                },
-              ],
-            }));
-          if (event.type === "outcome") {
-            setPending(event.status === "needs_confirmation" ? event : null);
-            updateAssistant(assistantId, (item) => ({
-              ...item,
-              status: { type: "complete", reason: "stop" },
-              content: (() => {
-                const content = item.content.some(
-                  (part) => part.type === "text" && part.text,
-                )
-                  ? item.content
-                  : [{ type: "text" as const, text: event.message }];
-                const normalized = content.map((part) =>
-                  part.type === "text"
-                    ? { ...part, text: normalizeBabyBuddyLinks(part.text) }
+                    part.toolCallId === event.tool_call_id
+                      ? {
+                          ...part,
+                          result: part.result ?? { completed: true },
+                          isError:
+                            event.state === "error" || event.state === "denied",
+                        }
+                      : part,
+                  );
+                  const toolResult = content.find(
+                    (part): part is ToolPart =>
+                      part.type === "tool-call" &&
+                      part.toolCallId === event.tool_call_id,
+                  )?.artifact;
+                  const existing = new Set(
+                    content
+                      .filter(
+                        (part): part is ImagePart => part.type === "image",
+                      )
+                      .map((part) => part.image),
+                  );
+                  return [
+                    ...content,
+                    ...imagesFromText(toolResult || "").filter(
+                      (part) => !existing.has(part.image),
+                    ),
+                  ];
+                })(),
+              }));
+            if (event.type === "human_required")
+              updateAssistant(assistantId, (item) => ({
+                ...item,
+                content: item.content.map((part) =>
+                  part.type === "tool-call" &&
+                  event.tool_call_ids.includes(part.toolCallId)
+                    ? { ...part, waiting: true }
                     : part,
-                );
-                const text = normalized
-                  .filter((part): part is TextPart => part.type === "text")
-                  .map((part) => part.text)
-                  .join("\n");
-                const existing = new Set(
-                  content
-                    .filter((part): part is ImagePart => part.type === "image")
-                    .map((part) => part.image),
-                );
-                return [
-                  ...normalized,
-                  ...imagesFromText(text).filter(
-                    (part) => !existing.has(part.image),
-                  ),
-                ];
-              })(),
-            }));
-          }
-        });
+                ),
+              }));
+            if (event.type === "hint")
+              updateAssistant(assistantId, (item) => ({
+                ...item,
+                content: [
+                  ...item.content,
+                  {
+                    type: "text",
+                    text: `> ${event.source ? `**${event.source}**：` : ""}${event.hint}`,
+                    blockId: event.block_id,
+                  },
+                ],
+              }));
+            if (event.type === "outcome") {
+              setPending(event.status === "needs_confirmation" ? event : null);
+              updateAssistant(assistantId, (item) => ({
+                ...item,
+                status: { type: "complete", reason: "stop" },
+                content: (() => {
+                  const content = item.content.some(
+                    (part) => part.type === "text" && part.text,
+                  )
+                    ? item.content
+                    : [{ type: "text" as const, text: event.message }];
+                  const normalized = content.map((part) =>
+                    part.type === "text"
+                      ? { ...part, text: normalizeBabyBuddyLinks(part.text) }
+                      : part,
+                  );
+                  const text = normalized
+                    .filter((part): part is TextPart => part.type === "text")
+                    .map((part) => part.text)
+                    .join("\n");
+                  const existing = new Set(
+                    content
+                      .filter(
+                        (part): part is ImagePart => part.type === "image",
+                      )
+                      .map((part) => part.image),
+                  );
+                  return [
+                    ...normalized,
+                    ...imagesFromText(text).filter(
+                      (part) => !existing.has(part.image),
+                    ),
+                  ];
+                })(),
+              }));
+            }
+          },
+          stagedUpload ? [stagedUpload.upload_id] : [],
+        );
+        setStagedUpload(null);
       } catch (error) {
         updateAssistant(assistantId, (item) => ({
           ...item,
@@ -600,7 +719,7 @@ export function Chat({
         void refresh();
       }
     },
-    [pending, refresh, running],
+    [pending, refresh, running, stagedUpload],
   );
 
   const runtime = useExternalStoreRuntime({
@@ -609,14 +728,10 @@ export function Chat({
     onNew: sendMessage,
     convertMessage: (message: ChatMessage): ThreadMessageLike => message,
   });
-  const create = () => {
+  const create = (history: "push" | "replace" = "push") => {
     if (running) return;
     const next = id();
-    sessionRef.current = next;
-    setSessionId(next);
-    setMessages([]);
-    setPending(null);
-    localStorage.setItem(storageKey(ownerId), next);
+    void load(next, { history });
   };
   const removeConversation = async (conversation: Conversation) => {
     if (
@@ -627,7 +742,7 @@ export function Chat({
     )
       return;
     await api.deleteConversation(conversation.session_id);
-    if (conversation.session_id === sessionRef.current) create();
+    if (conversation.session_id === sessionRef.current) create("replace");
     await refresh();
   };
   const decide = async (approved: boolean) => {
@@ -682,17 +797,34 @@ export function Chat({
       setRunning(false);
     }
   };
+  const stageDocument = async (file: File) => {
+    setUploading(true);
+    try {
+      setStagedUpload(await api.stageDocument(file));
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "文档暂存失败。");
+    } finally {
+      setUploading(false);
+    }
+  };
   return (
     <div className="app-shell">
-      <aside className="sidebar">
+      <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
         <div className="brand">
           <div className="brand-mark">J</div>
           <div>
             <strong>Home Jarvis</strong>
             <small>家庭智能中枢</small>
           </div>
+          <button
+            className="sidebar-close"
+            onClick={() => setSidebarOpen(false)}
+            aria-label="关闭历史记录"
+          >
+            <X size={20} />
+          </button>
         </div>
-        <button className="new-chat" onClick={create}>
+        <button className="new-chat" onClick={() => create()}>
           <Plus size={17} /> 新建对话
         </button>
         <nav>
@@ -704,7 +836,10 @@ export function Chat({
             >
               <button
                 className="history-select"
-                onClick={() => !running && void load(conversation.session_id)}
+                onClick={() =>
+                  !running &&
+                  void load(conversation.session_id, { history: "push" })
+                }
                 title={conversation.title || "新对话"}
               >
                 {conversation.title || "新对话"}
@@ -724,32 +859,59 @@ export function Chat({
           <LogOut size={16} /> 退出
         </button>
       </aside>
+      <button
+        className={`sidebar-backdrop ${sidebarOpen ? "visible" : ""}`}
+        onClick={() => setSidebarOpen(false)}
+        aria-label="关闭历史记录"
+        tabIndex={sidebarOpen ? 0 : -1}
+      />
       <main className="chat-panel">
         <header>
           <div>
-            <strong>Home Jarvis</strong>
+            <div className="header-title">
+              <button
+                className="sidebar-toggle"
+                onClick={() => setSidebarOpen(true)}
+                aria-label="打开历史记录"
+                aria-expanded={sidebarOpen}
+              >
+                <Menu size={21} />
+              </button>
+              <strong>Home Jarvis</strong>
+            </div>
             <span>
               <i /> 在线
             </span>
           </div>
         </header>
         <AssistantRuntimeProvider runtime={runtime}>
-          <Thread />
+          <Thread
+            upload={stagedUpload}
+            uploading={uploading}
+            onDocument={(file) => void stageDocument(file)}
+            onRemoveUpload={() => setStagedUpload(null)}
+          />
         </AssistantRuntimeProvider>
         {pending?.confirmation && (
           <div
-            className="confirm-card"
+            className={`confirm-card ${pending.confirmation.severity}`}
             role="dialog"
             aria-labelledby="confirmation-title"
           >
-            <strong id="confirmation-title">确认写入 Baby Buddy？</strong>
+            <strong id="confirmation-title">
+              {pending.confirmation.title}
+            </strong>
             <p>{pending.confirmation.description}</p>
             <small>
               可以点击按钮，也可以在输入框回复“确认”或“取消”。输入其他内容将取消本次操作并继续对话。
             </small>
             <div>
-              <button onClick={() => void decide(false)}>取消</button>
-              <button onClick={() => void decide(true)}>确认写入</button>
+              <button onClick={() => void decide(false)}>
+                {pending.confirmation.cancel_label}
+              </button>
+              <button onClick={() => void decide(true)}>
+                {pending.confirmation.confirm_label}
+              </button>
             </div>
           </div>
         )}

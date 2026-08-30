@@ -16,6 +16,7 @@ services:
       AGENT_WEB_ALLOWED_ORIGINS: ""
       AGENT_WEB_DATABASE_PATH: /data/agent-web.sqlite3
       BABYBUDDY_AUDIT_PATH: /data/audit/events.jsonl
+      PAPERLESS_UPLOAD_DIR: /data/paperless-uploads
       BABYBUDDY_MEDIA_URL: "${BABYBUDDY_MEDIA_URL:-http://baby.home}"
     ports:
       - "${HOME_JARVIS_PORT:-18080}:8000"

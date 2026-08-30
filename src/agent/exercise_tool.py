@@ -11,6 +11,16 @@ muscle_group, secondary_muscles, target, media_id, image_path, gif_path,
 attribution, source_created_at
 """
 
+_ZH_EXERCISE_ALIASES: dict[str, tuple[str, ...]] = {
+    "引体向上": ("pull-up", "pull up", "chin-up"),
+    "高位下拉": ("lat pulldown", "pulldown"),
+    "杠铃划船": ("barbell bent over row", "barbell row"),
+    "坐姿划船": ("seated row",),
+    "单臂哑铃划船": ("dumbbell one arm bent-over row", "one arm dumbbell row"),
+    "直臂下压": ("straight arm pulldown", "straight-arm pulldown"),
+    "俯身飞鸟": ("dumbbell reverse fly", "reverse fly"),
+}
+
 
 def _serializable(row: dict[str, Any] | None) -> dict[str, Any] | None:
     if row is None:
@@ -29,8 +39,9 @@ class ExerciseCatalog:
 
     async def query_exercises(
         self,
-        action: Literal["search", "get", "facets"] = "search",
+        action: Literal["search", "get", "facets", "lookup"] = "search",
         query: str | None = None,
+        exercise_names: list[str] | None = None,
         exercise_id: str | None = None,
         category: str | None = None,
         body_part: str | None = None,
@@ -41,8 +52,9 @@ class ExerciseCatalog:
         """查询动作数据库。
 
         Args:
-            action: search 搜索动作，get 按四位 ID 获取详情，facets 获取筛选项。
+            action: search 搜索，lookup 批量查动作，get 按 ID 获取，facets 获取筛选项。
             query: 按动作名、目标肌肉、器械或肌群模糊搜索。
+            exercise_names: lookup 时传入中文或英文动作名，最多 20 个。
             exercise_id: get 时必填的四位动作 ID。
             category: 动作类别筛选。
             body_part: 身体部位筛选。
@@ -54,8 +66,16 @@ class ExerciseCatalog:
             return await self._get(exercise_id)
         if action == "facets":
             return await self._facets()
+        if action == "lookup":
+            return await self._lookup(exercise_names)
         if action != "search":
-            raise ValueError("action must be search, get, or facets")
+            raise ValueError("action must be search, lookup, get, or facets")
+        aliases = _aliases_in_query(query)
+        if aliases:
+            return await self._lookup(aliases)
+        if query and any(word in query for word in ("背部", "练背")):
+            query = None
+            body_part = body_part or "back"
         return await self._search(
             query=query,
             category=category,
@@ -64,6 +84,35 @@ class ExerciseCatalog:
             target=target,
             limit=limit,
         )
+
+    async def _lookup(self, names: list[str] | None) -> dict[str, Any]:
+        if not names or len(names) > 20:
+            raise ValueError("exercise_names must contain between 1 and 20 names")
+        groups: list[dict[str, Any]] = []
+        async with await self._connect() as connection:
+            async with connection.cursor() as cursor:
+                for requested_name in names:
+                    requested_name = str(requested_name).strip()[:80]
+                    terms = _ZH_EXERCISE_ALIASES.get(
+                        requested_name,
+                        (requested_name,),
+                    )
+                    clauses = " OR ".join("name ILIKE %s" for _ in terms)
+                    patterns = [f"%{term}%" for term in terms]
+                    await cursor.execute(
+                        f"SELECT {_COLUMNS} FROM exercise_catalog "
+                        f"WHERE {clauses} ORDER BY length(name), name ASC LIMIT 3",
+                        patterns,
+                    )
+                    groups.append(
+                        {
+                            "requested_name": requested_name,
+                            "matches": [
+                                _serializable(row) for row in await cursor.fetchall()
+                            ],
+                        },
+                    )
+        return {"data": groups, "total": sum(len(x["matches"]) for x in groups)}
 
     async def _connect(self) -> psycopg.AsyncConnection[dict[str, Any]]:
         return await psycopg.AsyncConnection.connect(
@@ -151,3 +200,9 @@ def build_exercise_tool(database_url: str) -> Any:
 
     catalog = ExerciseCatalog(database_url)
     return FunctionTool(catalog.query_exercises, is_read_only=True)
+
+
+def _aliases_in_query(query: str | None) -> list[str]:
+    if not query:
+        return []
+    return [name for name in _ZH_EXERCISE_ALIASES if name in query]

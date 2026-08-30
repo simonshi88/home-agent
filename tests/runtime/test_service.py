@@ -205,6 +205,9 @@ def test_today_allows_only_read_tool_names(tmp_path) -> None:
 
     assert service._is_read_only_tool("mcp__babybuddy__children_list_children")
     assert service._is_read_only_tool("mcp__babybuddy__feedings_get_feeding")
+    assert service._is_read_only_tool("query_exercises")
+    assert service._is_read_only_tool("query_paperless")
+    assert not service._is_read_only_tool("upload_paperless_document")
     assert not service._is_read_only_tool("mcp__babybuddy__diapers_create_change")
 
 
@@ -237,8 +240,9 @@ async def test_runtime_restores_only_the_selected_session_context(
 
     captured = {}
 
-    async def team(settings, audit, *, leader_state, voice):
+    async def team(settings, audit, *, leader_state, owner_id, voice):
         captured["state"] = leader_state
+        captured["owner_id"] = owner_id
         return SimpleNamespace(
             conversation=SimpleNamespace(),
             clients=(),
@@ -255,6 +259,7 @@ async def test_runtime_restores_only_the_selected_session_context(
 
     state = captured["state"]
     assert state.session_id == "thread-a"
+    assert captured["owner_id"] == "browser-a"
     assert [message.get_text_content() for message in state.context] == [
         "宝宝叫什么？",
         "宝宝叫多米。",

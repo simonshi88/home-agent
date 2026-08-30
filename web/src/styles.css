@@ -38,6 +38,11 @@ button:disabled {
   gap: 11px;
   padding: 0 8px 22px;
 }
+.sidebar-close,
+.sidebar-toggle,
+.sidebar-backdrop {
+  display: none;
+}
 .brand-mark {
   display: grid;
   place-items: center;
@@ -163,6 +168,11 @@ button:disabled {
   display: flex;
   justify-content: space-between;
 }
+.header-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
 .chat-panel > header span {
   color: #788078;
   font-size: 12px;
@@ -207,9 +217,9 @@ button:disabled {
 }
 .capabilities {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 10px;
-  width: min(520px, 100%);
+  width: min(680px, 100%);
   margin: 24px auto 0;
   text-align: left;
 }
@@ -459,6 +469,72 @@ button:disabled {
   background: white;
   box-shadow: 0 8px 32px rgba(33, 49, 39, 0.1);
 }
+.attach {
+  display: grid;
+  flex: 0 0 38px;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 11px;
+  color: #69736b;
+  cursor: pointer;
+}
+.attach:hover {
+  color: #315d4a;
+  background: #edf2ed;
+}
+.attach.uploading {
+  opacity: 0.45;
+  pointer-events: none;
+}
+.attach input,
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.upload-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 0 8px 4px;
+  padding: 8px 9px 8px 11px;
+  border: 1px solid #dbe3dc;
+  border-radius: 11px;
+  color: #315d4a;
+  background: white;
+  box-shadow: 0 5px 18px rgba(33, 49, 39, 0.08);
+}
+.upload-chip span {
+  overflow: hidden;
+  max-width: min(62vw, 360px);
+  color: #4f5851;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.upload-chip button {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  color: #7b837c;
+  background: transparent;
+}
+.upload-chip button:hover {
+  color: #9b3f3f;
+  background: #f8e8e8;
+}
 .composer textarea {
   flex: 1;
   max-height: 140px;
@@ -533,6 +609,14 @@ button:disabled {
   border-color: #315d4a;
   background: #315d4a;
 }
+.confirm-card.danger {
+  border-color: #d9a1a1;
+  background: #fff7f7;
+}
+.confirm-card.danger button:last-child {
+  border-color: #a23c3c;
+  background: #a23c3c;
+}
 @keyframes pulse {
   50% {
     opacity: 0.45;
@@ -548,7 +632,66 @@ button:disabled {
     grid-template-columns: 1fr;
   }
   .sidebar {
-    display: none;
+    position: fixed;
+    z-index: 20;
+    inset: 0 auto 0 0;
+    width: min(86vw, 320px);
+    padding-top: 18px;
+    border-right: 0;
+    box-shadow: 12px 0 35px rgba(28, 41, 32, 0.18);
+    transform: translateX(-105%);
+    transition: transform 180ms ease;
+  }
+  .sidebar.open {
+    transform: translateX(0);
+  }
+  .sidebar-close {
+    display: grid;
+    place-items: center;
+    width: 40px;
+    height: 40px;
+    margin-left: auto;
+    border: 0;
+    border-radius: 10px;
+    color: #59625a;
+    background: transparent;
+  }
+  .sidebar-close:hover {
+    background: #edf2ed;
+  }
+  .sidebar-backdrop {
+    position: fixed;
+    z-index: 19;
+    inset: 0;
+    display: block;
+    width: 100%;
+    border: 0;
+    opacity: 0;
+    pointer-events: none;
+    background: rgba(23, 31, 25, 0.38);
+    transition: opacity 180ms ease;
+  }
+  .sidebar-backdrop.visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .sidebar-toggle {
+    display: grid;
+    place-items: center;
+    width: 38px;
+    height: 38px;
+    margin: -8px 0 -8px -8px;
+    border: 0;
+    border-radius: 10px;
+    color: #315d4a;
+    background: transparent;
+  }
+  .sidebar-toggle:hover,
+  .sidebar-toggle:focus-visible {
+    background: #e9f0ea;
+  }
+  .chat-panel > header {
+    padding: 17px 18px;
   }
   .thread-viewport {
     padding: 80px 18px 125px;

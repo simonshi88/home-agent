@@ -13,7 +13,8 @@ from ..chat import ConfirmationCallback, Conversation
 from ..config import Settings
 from ..exercise_tool import build_exercise_tool
 from ..mcp_client import build_baby_toolkit, build_mcp_clients, connect_available_mcp
-from .prompts import BABY_PROMPT, EXERCISE_PROMPT, JARVIS_PROMPT
+from ..paperless_tool import build_paperless_tools
+from .prompts import BABY_PROMPT, EXERCISE_PROMPT, JARVIS_PROMPT, PAPERLESS_PROMPT
 
 
 class TeamConversation:
@@ -63,6 +64,7 @@ async def build_home_jarvis_team(
     audit: AuditLogger,
     *,
     leader_state: Any | None = None,
+    owner_id: str = "local",
     voice: bool = False,
 ) -> HomeJarvisTeam:
     """Build one isolated Home Jarvis team for a logical conversation."""
@@ -89,6 +91,16 @@ async def build_home_jarvis_team(
         settings.user_name,
         audit,
     )
+    paperless = Conversation(
+        build_agent(
+            settings,
+            Toolkit(tools=build_paperless_tools(settings, owner_id)),
+            name="paperless_specialist",
+            system_prompt=PAPERLESS_PROMPT,
+        ),
+        settings.user_name,
+        audit,
+    )
 
     holder: dict[str, TeamConversation] = {}
 
@@ -100,10 +112,15 @@ async def build_home_jarvis_team(
         """把动作资料、器械或目标肌群查询交给 Exercise 专项 Agent。"""
         return await holder["team"].delegate("exercise", task)
 
+    async def delegate_to_paperless(task: str) -> str:
+        """把家庭文档查询、分类或上传任务交给 Paperless 专项 Agent。"""
+        return await holder["team"].delegate("paperless", task)
+
     leader_tools = Toolkit(
         tools=[
             FunctionTool(delegate_to_baby, is_read_only=True),
             FunctionTool(delegate_to_exercise, is_read_only=True),
+            FunctionTool(delegate_to_paperless, is_read_only=True),
         ],
     )
     leader = Conversation(
@@ -119,7 +136,7 @@ async def build_home_jarvis_team(
     )
     team_conversation = TeamConversation(
         leader,
-        {"baby": baby, "exercise": exercise},
+        {"baby": baby, "exercise": exercise, "paperless": paperless},
     )
     holder["team"] = team_conversation
     return HomeJarvisTeam(team_conversation, clients, unavailable)

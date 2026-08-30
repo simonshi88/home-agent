@@ -8,20 +8,21 @@ import json
 from contextlib import asynccontextmanager
 from hashlib import sha256
 from pathlib import Path
-from typing import AsyncIterator
+from typing import Annotated, AsyncIterator
 from urllib.parse import quote, urlparse
-from uuid import uuid4
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request, status
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile, status
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.datastructures import Headers
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.staticfiles import StaticFiles
 
 from ..config import Settings
+from ..paperless_tool import owner_upload_directory, resolve_staged_upload
 from ..runtime.service import (
     AgentService,
     BusySessionError,
@@ -41,6 +42,7 @@ class ChatRequest(BaseModel):
     text: str = Field(min_length=1, max_length=2_000)
     session_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._-]+$")
     timezone: str = Field(min_length=1, max_length=64)
+    uploads: list[UUID] = Field(default_factory=list, max_length=5)
 
 
 class ConfirmRequest(BaseModel):
@@ -190,6 +192,56 @@ def create_app(settings: Settings, service: AgentService | None = None) -> FastA
     async def current_session(request: Request) -> dict[str, str]:
         return {"status": "authenticated", "owner_id": owner_id(request)}
 
+    @app.post("/api/uploads")
+    async def stage_paperless_upload(
+        request: Request,
+        document: Annotated[UploadFile, File()],
+    ) -> dict[str, object]:
+        """Stage one authenticated browser file for the Paperless write tool."""
+        owner = owner_id(request)
+        filename = Path(document.filename or "").name
+        if not filename or filename in {".", ".."} or len(filename) > 255:
+            raise HTTPException(status_code=422, detail="invalid filename")
+        upload_id = str(uuid4())
+        upload_dir = (
+            owner_upload_directory(settings.paperless_upload_dir, owner) / upload_id
+        )
+        upload_dir.mkdir(parents=True, exist_ok=False)
+        target = upload_dir / filename
+        max_bytes = settings.paperless_upload_max_mb * 1024 * 1024
+        size = 0
+        try:
+            with target.open("wb") as output:
+                while chunk := await document.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > max_bytes:
+                        raise HTTPException(
+                            status_code=413,
+                            detail="document is too large",
+                        )
+                    output.write(chunk)
+            if size == 0:
+                raise HTTPException(status_code=422, detail="document is empty")
+            (upload_dir / "metadata.json").write_text(
+                json.dumps(
+                    {
+                        "filename": filename,
+                        "content_type": document.content_type or "",
+                        "size": size,
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+        except Exception:
+            target.unlink(missing_ok=True)
+            (upload_dir / "metadata.json").unlink(missing_ok=True)
+            upload_dir.rmdir()
+            raise
+        finally:
+            await document.close()
+        return {"upload_id": upload_id, "filename": filename, "size": size}
+
     @app.get("/api/babybuddy-media/{media_path:path}")
     async def babybuddy_media(media_path: str, request: Request) -> StreamingResponse:
         """Proxy authenticated Baby Buddy images hidden behind its Docker hostname."""
@@ -204,6 +256,7 @@ def create_app(settings: Settings, service: AgentService | None = None) -> FastA
         client = httpx.AsyncClient(
             timeout=settings.mcp_timeout,
             follow_redirects=False,
+            trust_env=False,
         )
         try:
             upstream = await client.send(
@@ -285,7 +338,7 @@ def create_app(settings: Settings, service: AgentService | None = None) -> FastA
             outcome = await runtime(request).chat(
                 session_id=payload.session_id,
                 owner_id=owner_id(request),
-                text=payload.text.strip(),
+                text=_chat_input(payload, owner_id(request), settings),
                 timezone=valid_timezone(payload.timezone),
             )
         except BusySessionError as exc:
@@ -324,7 +377,7 @@ def create_app(settings: Settings, service: AgentService | None = None) -> FastA
                     outcome = await runtime(request).chat(
                         session_id=payload.session_id,
                         owner_id=owner,
-                        text=payload.text.strip(),
+                        text=_chat_input(payload, owner, settings),
                         timezone=timezone,
                         emit=emit,
                     )
@@ -473,6 +526,12 @@ def create_app(settings: Settings, service: AgentService | None = None) -> FastA
 
     frontend_dir = Path("/app/web/dist")
     if frontend_dir.is_dir():
+        @app.get("/chat")
+        @app.get("/chat/{session_id}")
+        async def frontend_chat(session_id: str | None = None) -> FileResponse:
+            """Serve the SPA for conversation-specific browser routes."""
+            return FileResponse(frontend_dir / "index.html")
+
         app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")
 
     return app
@@ -493,7 +552,7 @@ def _chat_message_payload(message: ChatMessageRecord) -> dict[str, str | None]:
         "id": message.id,
         "session_id": message.session_id,
         "role": message.role,
-        "content": message.content,
+        "content": _visible_chat_text(message.content),
         "status": message.status,
         "created_at": message.created_at,
     }
@@ -502,11 +561,13 @@ def _chat_message_payload(message: ChatMessageRecord) -> dict[str, str | None]:
 def _outcome_payload(outcome: ChatOutcome) -> dict[str, object]:
     payload: dict[str, object] = {"status": outcome.status, "message": outcome.message}
     if outcome.confirmation is not None:
+        presentation = _confirmation_presentation(outcome.confirmation.tool_names)
         payload["confirmation_id"] = outcome.confirmation.id
         payload["confirmation"] = {
             "description": outcome.confirmation.description,
             "tool_names": list(outcome.confirmation.tool_names),
             "expires_at": outcome.confirmation.expires_at,
+            **presentation,
         }
     return payload
 
@@ -523,5 +584,74 @@ def _home_assistant_outcome_payload(
     return payload
 
 
+def _confirmation_presentation(tool_names: tuple[str, ...]) -> dict[str, str]:
+    """Describe the actual pending tools; the browser must not infer ownership."""
+    if tool_names == ("upload_paperless_document",):
+        return {
+            "title": "上传文档到 Paperless？",
+            "confirm_label": "确认上传",
+            "cancel_label": "取消",
+            "severity": "warning",
+        }
+    if tool_names and all(name.startswith("mcp__babybuddy__") for name in tool_names):
+        destructive = any(
+            marker in name for name in tool_names for marker in ("delete", "remove")
+        )
+        if destructive:
+            return {
+                "title": "删除 Baby Buddy 数据？",
+                "confirm_label": "确认删除",
+                "cancel_label": "取消",
+                "severity": "danger",
+            }
+        return {
+            "title": "写入 Baby Buddy？",
+            "confirm_label": "确认写入",
+            "cancel_label": "取消",
+            "severity": "warning",
+        }
+    return {
+        "title": "执行此工具操作？",
+        "confirm_label": "确认执行",
+        "cancel_label": "取消",
+        "severity": "warning",
+    }
+
+
 def _stable_id(value: str) -> str:
     return sha256(value.encode()).hexdigest()[:32]
+
+
+def _chat_input(payload: ChatRequest, owner_id: str, settings: Settings) -> str:
+    if not payload.uploads:
+        return payload.text.strip()
+    documents = []
+    for upload_id in payload.uploads:
+        upload_id = str(upload_id)
+        try:
+            _, metadata = resolve_staged_upload(
+                settings.paperless_upload_dir,
+                owner_id,
+                upload_id,
+            )
+        except (ValueError, OSError, json.JSONDecodeError) as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="uploaded document was not found",
+            ) from exc
+        documents.append(
+            {
+                "upload_id": upload_id,
+                "filename": metadata["filename"],
+                "size": metadata.get("size"),
+            },
+        )
+    trusted = json.dumps(documents, ensure_ascii=False)
+    return (
+        f"{payload.text.strip()}\n\n"
+        f"<trusted_paperless_uploads>{trusted}</trusted_paperless_uploads>"
+    )
+
+
+def _visible_chat_text(text: str) -> str:
+    return text.split("\n\n<trusted_paperless_uploads>", 1)[0]

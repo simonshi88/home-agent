@@ -43,12 +43,19 @@ async def test_home_jarvis_team_keeps_tools_on_specialists(
     leader_tools = captured["home_jarvis"].tool_groups[0].tools
     baby_group = captured["baby_specialist"].tool_groups[0]
     exercise_group = captured["exercise_specialist"].tool_groups[0]
+    paperless_group = captured["paperless_specialist"].tool_groups[0]
     assert [tool.name for tool in leader_tools] == [
         "delegate_to_baby",
         "delegate_to_exercise",
+        "delegate_to_paperless",
     ]
     assert baby_group.tools == []
     assert baby_group.mcps == [baby_client]
     assert [tool.name for tool in exercise_group.tools] == ["query_exercises"]
     assert exercise_group.mcps == []
+    assert [tool.name for tool in paperless_group.tools] == [
+        "query_paperless",
+        "upload_paperless_document",
+    ]
+    assert paperless_group.mcps == []
     assert team.clients == (baby_client,)

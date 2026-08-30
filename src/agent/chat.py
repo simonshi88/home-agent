@@ -48,7 +48,7 @@ class Conversation:
             inputs: Any = UserMsg(name=self.user_name, content=text)
             output: list[str] = []
             while True:
-                pending: RequireUserConfirmEvent | None = None
+                pending_events: list[RequireUserConfirmEvent] = []
                 async for event in self.agent.reply_stream(inputs):
                     if emit is not None:
                         result = emit(event)
@@ -57,13 +57,25 @@ class Conversation:
                     if isinstance(event, TextBlockDeltaEvent):
                         output.append(event.delta)
                     elif isinstance(event, RequireUserConfirmEvent):
-                        pending = event
-                        break
+                        # A concurrent tool batch can emit one confirmation
+                        # event per call.  The stream must be fully consumed:
+                        # AgentScope does not emit the unhandled events again
+                        # when the reply is resumed.
+                        pending_events.append(event)
 
-                if pending is None:
+                if not pending_events:
                     break
 
-                tool_calls = tuple(pending.tool_calls)
+                reply_ids = {event.reply_id for event in pending_events}
+                if len(reply_ids) != 1:
+                    raise RuntimeError(
+                        "confirmation events from one reply have different ids",
+                    )
+                unique_calls: dict[str, Any] = {}
+                for event in pending_events:
+                    for tool_call in event.tool_calls:
+                        unique_calls.setdefault(tool_call.id, tool_call)
+                tool_calls = tuple(unique_calls.values())
                 for tool_call in tool_calls:
                     if self.audit:
                         self.audit.tool_call(tool_call)
@@ -96,7 +108,7 @@ class Conversation:
                     )
 
                 inputs = UserConfirmResultEvent(
-                    reply_id=pending.reply_id,
+                    reply_id=next(iter(reply_ids)),
                     confirm_results=confirmations,
                 )
 

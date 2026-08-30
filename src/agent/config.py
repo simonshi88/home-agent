@@ -90,7 +90,14 @@ class Settings:
         "127.0.0.1",
     )
     babybuddy_media_url: str = "http://baby.home"
-    database_url: str = "postgresql://postgres:123456@192.168.5.13:5432/ExerciseDB"
+    database_url: str = (
+        "postgresql://exercise_user:CHANGE_ME@db.example.internal:5432/ExerciseDB"
+    )
+    paperless_url: str = "http://paperless.home"
+    paperless_api_token: str | None = None
+    paperless_timeout: float = 30.0
+    paperless_upload_dir: str = "var/paperless-uploads"
+    paperless_upload_max_mb: int = 32
     user_name: str = "user"
     audit_path: str = "var/audit/events.jsonl"
     web_host: str = "0.0.0.0"
@@ -155,6 +162,16 @@ class Settings:
                 "BABYBUDDY_MEDIA_URL must be an http(s) origin",
             )
 
+        paperless_url = (
+            os.getenv("PAPERLESS_URL", cls.paperless_url).strip().rstrip("/")
+        )
+        paperless_parsed = urlparse(paperless_url)
+        if (
+            paperless_parsed.scheme not in {"http", "https"}
+            or not paperless_parsed.hostname
+        ):
+            raise ConfigurationError("PAPERLESS_URL must be an http(s) origin")
+
         return cls(
             model_provider=provider,
             model_name=os.getenv("AGENTSCOPE_MODEL_NAME", cls.model_name).strip(),
@@ -179,6 +196,17 @@ class Settings:
             mcp_allowed_hosts=allowed_hosts,
             babybuddy_media_url=media_url,
             database_url=database_url,
+            paperless_url=paperless_url,
+            paperless_api_token=os.getenv("PAPERLESS_API_TOKEN"),
+            paperless_timeout=_float("PAPERLESS_TIMEOUT", cls.paperless_timeout),
+            paperless_upload_dir=os.getenv(
+                "PAPERLESS_UPLOAD_DIR",
+                cls.paperless_upload_dir,
+            ),
+            paperless_upload_max_mb=_int(
+                "PAPERLESS_UPLOAD_MAX_MB",
+                cls.paperless_upload_max_mb,
+            ),
             user_name=os.getenv("BABYBUDDY_USER_NAME", cls.user_name),
             audit_path=os.getenv("BABYBUDDY_AUDIT_PATH", cls.audit_path),
             web_host=os.getenv("AGENT_WEB_HOST", cls.web_host).strip(),

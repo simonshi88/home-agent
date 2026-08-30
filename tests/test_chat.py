@@ -56,6 +56,23 @@ class FakeAgent:
             yield FakeTextBlockDeltaEvent("处理完成。")
 
 
+class FakeConcurrentAgent:
+    def __init__(self) -> None:
+        self.calls = [
+            SimpleNamespace(id="tool-1", name="read_a", input="{}"),
+            SimpleNamespace(id="tool-2", name="read_b", input="{}"),
+        ]
+        self.confirm_results = None
+
+    async def reply_stream(self, inputs):
+        if isinstance(inputs, FakeUserMsg):
+            yield FakeRequireUserConfirmEvent([self.calls[0]], "reply-1")
+            yield FakeRequireUserConfirmEvent([self.calls[1]], "reply-1")
+        else:
+            self.confirm_results = inputs.confirm_results
+            yield FakeTextBlockDeltaEvent("全部完成。")
+
+
 @pytest.fixture
 def fake_agentscope(monkeypatch: pytest.MonkeyPatch) -> None:
     event = ModuleType("agentscope.event")
@@ -84,3 +101,26 @@ async def test_conversation_confirms_all_calls_as_one_group(fake_agentscope) -> 
     assert len(captured) == 1
     assert [call.name for call in captured[0]] == ["write_a", "write_b"]
     assert [result.confirmed for result in agent.confirm_results] == [True, False]
+
+
+async def test_conversation_does_not_drop_concurrent_confirmation_events(
+    fake_agentscope,
+) -> None:
+    agent = FakeConcurrentAgent()
+    conversation = Conversation(agent=agent, user_name="parent")
+    captured = []
+
+    async def confirm(tool_calls):
+        captured.append(tool_calls)
+        return [True] * len(tool_calls)
+
+    reply = await conversation.reply("并发查询", confirm=confirm)
+
+    assert reply == "全部完成。"
+    assert [[call.id for call in calls] for calls in captured] == [
+        ["tool-1", "tool-2"],
+    ]
+    assert [result.tool_call.id for result in agent.confirm_results] == [
+        "tool-1",
+        "tool-2",
+    ]

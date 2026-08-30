@@ -1,6 +1,20 @@
 export type Confirmation = {
   confirmation_id: string;
-  confirmation: { description: string; expires_at: string };
+  confirmation: {
+    description: string;
+    expires_at: string;
+    tool_names: string[];
+    title: string;
+    confirm_label: string;
+    cancel_label: string;
+    severity: "warning" | "danger";
+  };
+};
+
+export type StagedUpload = {
+  upload_id: string;
+  filename: string;
+  size: number;
 };
 
 export type ChatResponse = {
@@ -142,12 +156,13 @@ export const api = {
     session_id: string,
     text: string,
     onEvent: (event: StreamEvent) => void,
+    uploads: string[] = [],
   ) => {
     const response = await fetch("/api/chat/stream", {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id, text, timezone: timezone() }),
+      body: JSON.stringify({ session_id, text, timezone: timezone(), uploads }),
     });
     if (!response.ok || !response.body) throw new Error("无法启动流式响应。");
     const reader = response.body.getReader();
@@ -162,6 +177,19 @@ export const api = {
         if (line.trim()) onEvent(JSON.parse(line) as StreamEvent);
       if (done) break;
     }
+  },
+  stageDocument: async (document: File) => {
+    const body = new FormData();
+    body.append("document", document, document.name);
+    const response = await fetch("/api/uploads", {
+      method: "POST",
+      credentials: "include",
+      body,
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok)
+      throw new Error(payload.detail || "文档暂存失败，请重试。");
+    return payload as StagedUpload;
   },
   confirm: (confirmation_id: string, approved: boolean) =>
     request<ChatResponse>("/api/confirm", {

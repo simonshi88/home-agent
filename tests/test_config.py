@@ -16,6 +16,8 @@ def test_settings_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.mcp_stateful is True
     assert settings.database_url.endswith("/ExerciseDB")
     assert settings.babybuddy_media_url == "http://baby.home"
+    assert settings.paperless_url == "http://paperless.home"
+    assert settings.paperless_api_token is None
 
 
 def test_babybuddy_media_url_must_be_http(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -23,6 +25,14 @@ def test_babybuddy_media_url_must_be_http(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setenv("BABYBUDDY_MEDIA_URL", "file:///tmp/media")
 
     with pytest.raises(ConfigurationError, match="BABYBUDDY_MEDIA_URL"):
+        Settings.from_env()
+
+
+def test_paperless_url_must_be_http(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("PAPERLESS_URL", "file:///documents")
+
+    with pytest.raises(ConfigurationError, match="PAPERLESS_URL"):
         Settings.from_env()
 
 

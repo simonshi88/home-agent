@@ -9,11 +9,16 @@ CLI / Web / Home Assistant
     -> Home Jarvis（leader，仅持有委派工具和主会话上下文）
        ├─ delegate_to_baby -> Baby Specialist
        │                       └─ BabyBuddy MCP
-       └─ delegate_to_exercise -> Exercise Specialist
-                                   └─ query_exercises -> PostgreSQL exercise_catalog
+       ├─ delegate_to_exercise -> Exercise Specialist
+       │                           └─ query_exercises -> PostgreSQL exercise_catalog
+       └─ delegate_to_paperless -> Paperless Specialist
+                                    ├─ query_paperless -> Paperless-ngx REST API
+                                    └─ upload_paperless_document -> HITL -> Paperless
 ```
 
-每个 Toolkit 只属于一个 Agent：Home Jarvis 不持有领域工具；Baby Specialist 独占 BabyBuddy MCP；Exercise Specialist 独占只读 `query_exercises`。子 Agent 的事件、工具过程和 HITL 会透传到 leader 的页面流。
+每个 Toolkit 只属于一个 Agent：Home Jarvis 不持有领域工具；Baby Specialist 独占
+BabyBuddy MCP；Exercise Specialist 独占只读 `query_exercises`；Paperless Specialist
+独占文档查询和上传工具。子 Agent 的事件、工具过程和 HITL 会透传到 leader 的页面流。
 
 应用层不直接调用 Anthropic、OpenAI 或 MCP SDK 的底层循环；模型、工具和消息循环都通过 AgentScope API 装配。
 
@@ -73,10 +78,26 @@ BABYBUDDY_MCP_TIMEOUT=30
 动作数据库配置：
 
 ```text
-DATABASE_URL=postgresql://postgres:123456@192.168.5.13:5432/ExerciseDB
+DATABASE_URL=postgresql://<用户名>:<密码>@<数据库主机>:5432/<数据库名>
 ```
 
-`query_exercises` 支持搜索、按四位 ID 取详情和读取筛选项。数据库凭据只存在服务端；浏览器和模型都不能提交任意 SQL。
+请只在未纳入 Git 的 `.env` 中填写真实连接信息。`query_exercises` 支持搜索、
+按四位 ID 取详情和读取筛选项；数据库凭据不会发送到浏览器或模型，工具也不接受任意 SQL。
+
+Paperless-ngx 配置：
+
+```text
+PAPERLESS_URL=http://paperless.home
+PAPERLESS_API_TOKEN=在 Paperless 用户设置中创建的 API Token
+PAPERLESS_TIMEOUT=30
+PAPERLESS_UPLOAD_DIR=var/paperless-uploads
+PAPERLESS_UPLOAD_MAX_MB=32
+```
+
+`query_paperless` 支持全文搜索、文档详情、标签、通讯者、文档类型、存储路径、
+自定义字段和上传任务查询。网页输入框左侧的附件按钮会先把文件暂存在当前登录用户的
+隔离目录中；`upload_paperless_document` 只能使用该上传 ID，不能读取任意服务器路径。
+真正上传前会显示 HITL 确认卡。Paperless 接收上传后返回异步任务 ID，可继续查询处理状态。
 
 ## 运行
 
