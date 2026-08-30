@@ -77,18 +77,27 @@ class SameOriginMiddleware:
         }:
             headers = Headers(scope=scope)
             origin = headers.get("origin")
+
             if origin:
-                dynamic_origin = (
-                    f"{scope.get('scheme', 'http')}://{headers.get('host', '')}"
-                )
-                api_host = headers.get("host", "").split(":", maxsplit=1)[0]
+                forwarded_proto = headers.get("x-forwarded-proto")
+                scheme = forwarded_proto or scope.get("scheme", "http")
+
+                host = headers.get("host", "")
+
+                dynamic_origin = f"{scheme}://{host}"
+
+                api_host = host.split(":", maxsplit=1)[0]
+
                 parsed_origin = urlparse(origin)
+
                 vite_proxy_origin = (
-                    parsed_origin.scheme == scope.get("scheme", "http")
+                    parsed_origin.scheme == scheme
                     and parsed_origin.hostname == api_host
                     and parsed_origin.port == 5173
                 )
+
                 allowed = self.allowed_origins or {dynamic_origin}
+
                 if origin not in allowed and not vite_proxy_origin:
                     response = JSONResponse(
                         {"detail": "cross-origin requests are not allowed"},
@@ -96,8 +105,8 @@ class SameOriginMiddleware:
                     )
                     await response(scope, receive, send)
                     return
-        await self.app(scope, receive, send)
 
+        await self.app(scope, receive, send)
 
 def create_app(settings: Settings, service: AgentService | None = None) -> FastAPI:
     """Build the service app without leaking runtime configuration to the client."""

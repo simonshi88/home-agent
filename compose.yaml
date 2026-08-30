@@ -20,7 +20,7 @@ services:
     ports:
       - "${HOME_JARVIS_PORT:-18080}:8000"
     volumes:
-      - agent_data:/data
+      - ./agent_data:/data
     tmpfs:
       - /tmp:size=128m,mode=1777
     security_opt:
